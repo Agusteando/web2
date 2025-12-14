@@ -9,8 +9,9 @@
     "sync:legacy": "node scripts/pull-legacy.mjs"
   },
   "dependencies": {
-    "nuxt": "^3.12.0",
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^17.2.3",
     "mysql2": "^3.11.0",
-    "cheerio": "^1.0.0-rc.12"
+    "nuxt": "^3.12.0"
   }
 }

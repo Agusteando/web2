@@ -1,18 +1,24 @@
+// nuxt.config.ts
 export default defineNuxtConfig({
-  ssr: false,
+  ssr: true,      // can be false too; doesn't matter for your server routes
+  pages: false,
 
-  runtimeConfig: {
-    dbHost: process.env.DB_HOST,
-    dbPort: Number(process.env.DB_PORT || 3306),
-    dbName: process.env.DB_NAME,
-    dbUser: process.env.DB_USER,
-    dbPassword: process.env.DB_PASSWORD,
-    public: {
-      siteUrl: process.env.NUXT_PUBLIC_SITE_URL || "http://localhost:3000"
-    }
+  nitro: {
+    preset: "node-server",
+    server: {
+      host: process.env.NITRO_HOST || "127.0.0.1",
+      port: Number(process.env.NITRO_PORT || process.env.PORT || 16767),
+    },
   },
 
-  // We will serve the designer HTML directly from Nitro routes.
-  // Keep Nuxt pages disabled to avoid conflicts.
-  pages: false
+  runtimeConfig: {
+    dbHost: "",
+    dbPort: 3306,
+    dbName: "",
+    dbUser: "",
+    dbPassword: "",
+    public: {
+      siteUrl: "",
+    },
+  },
 });

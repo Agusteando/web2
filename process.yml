@@ -1,0 +1,20 @@
+apps:
+  - name: WEB-VUE
+    cwd: C:/Server/htdocs/web
+    script: .output/server/index.mjs
+    interpreter: "C:/Program Files/nodejs/node.exe"
+    exec_mode: fork
+    instances: 1
+    watch: false
+    autorestart: true
+
+    node_args:
+      - --require
+      - ./node-preload.cjs
+      - --require
+      - ./env-preload.cjs
+
+    env:
+      NODE_ENV: production
+      HOST: 127.0.0.1
+      PORT: 16767
