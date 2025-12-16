@@ -13,8 +13,6 @@ const COOKIE_LAST_LOGIN_TYPE = "last_login_type";
 
 /**
  * Normalize a raw cookie or env string into a boolean or "unknown".
- * This is used both for the env-based hard kill switch and for
- * backwards-compatible index-only env gating.
  */
 function normalizeEnvBoolean(raw: string | undefined | null): "true" | "false" | "unknown" {
   if (!raw) return "unknown";
@@ -28,11 +26,6 @@ function normalizeEnvBoolean(raw: string | undefined | null): "true" | "false" |
 
 /**
  * Hard env-based kill switch for ALL ads, regardless of DB config.
- *
- * If ENABLE_INDEX_ADS (or NUXT_ENABLE_INDEX_ADS) is explicitly set
- * to a false-y string (0, false, no, off) we treat that as "absolutely
- * no ads", but we still log segmentation + eligibility so the system
- * remains auditable.
  */
 export function isEnvAdsHardDisabled(): boolean {
   const raw =
@@ -45,12 +38,7 @@ export function isEnvAdsHardDisabled(): boolean {
 }
 
 /**
- * Backwards-compatible helper that reads the same env flag the original
- * requirement mentioned (ENABLE_INDEX_ADS / NUXT_ENABLE_INDEX_ADS).
- *
- * This is NO LONGER authoritative for ad rendering; the real control
- * plane is ad_config + the decision engine. However, this helper
- * remains available for any legacy callers.
+ * Legacy helper for ENABLE_INDEX_ADS / NUXT_ENABLE_INDEX_ADS.
  */
 export function isIndexAdsEnabled(runtimeConfig?: NitroRuntimeConfig): boolean {
   // Prefer explicit runtime config if present.
@@ -69,9 +57,6 @@ export function isIndexAdsEnabled(runtimeConfig?: NitroRuntimeConfig): boolean {
 
 /**
  * Determine the appropriate cookie domain for this request.
- *
- * - In production, this will be ".casitaiedis.edu.mx" (cross-subdomain)
- * - In local/dev, we omit the Domain attribute so cookies stay host-only.
  */
 function getCookieDomainForEvent(event: H3Event): string | undefined {
   const url = getRequestURL(event);
@@ -132,12 +117,14 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 /**
- * Normalize an IP string so IPv6 loopback / IPv4-mapped addresses collapse to IPv4.
+ * Normalize an IP string so IPv6 loopback / IPv4-mapped / "ip:port" collapse cleanly.
  *
  * Examples:
- *   "::1"                 -> "127.0.0.1"
- *   "::ffff:127.0.0.1"    -> "127.0.0.1"
- *   "::ffff:148.230.1.2"  -> "148.230.1.2"
+ *   "::1"                    -> "127.0.0.1"
+ *   "::ffff:127.0.0.1"       -> "127.0.0.1"
+ *   "148.230.251.169:61540"  -> "148.230.251.169"
+ *   "148.230.251.169"        -> "148.230.251.169"
+ *   "::ffff:148.230.251.169" -> "148.230.251.169"
  */
 function normalizeIp(raw: string | undefined | null): string {
   if (!raw) return "";
@@ -151,6 +138,17 @@ function normalizeIp(raw: string | undefined | null): string {
     ip = ip.slice("::ffff:".length);
   }
 
+  // Strip ":port" for IPv4-style strings (whether they came from remoteAddress or env).
+  // Matches:
+  //   1.2.3.4
+  //   1.2.3.4:1234
+  const ipv4WithOptionalPort = /^(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?$/;
+  const m = ip.match(ipv4WithOptionalPort);
+  if (m) {
+    return m[1];
+  }
+
+  // For non-IPv4 forms (plain IPv6, etc.), just return as-is.
   return ip;
 }
 
@@ -173,12 +171,7 @@ function getClientIp(event: H3Event): string {
 }
 
 /**
- * Ensure visitor_id, user_segment, ads_suppressed and last_login_type
- * cookies exist and are normalized for this request.
- *
- * - New visitors become ORGANIC with ads_suppressed = false, last_login_type = none.
- * - Cookies are set on the apex domain in production (".casitaiedis.edu.mx")
- *   so PHP (login.php) and Node (/login) can share a single segmentation view.
+ * Ensure visitor-related cookies exist and are normalized.
  */
 export async function getOrCreateVisitorContext(event: H3Event): Promise<VisitorContext> {
   const debug =
@@ -237,7 +230,6 @@ export async function getOrCreateVisitorContext(event: H3Event): Promise<Visitor
   };
 
   if (debug) {
-    // Focused diagnostics to confirm cookie normalization is behaving as expected.
     // eslint-disable-next-line no-console
     console.log("[ads] VisitorContext", {
       visitorId: visitor.visitorId,
@@ -253,41 +245,15 @@ export async function getOrCreateVisitorContext(event: H3Event): Promise<Visitor
 
 /**
  * Deterministic hashing of visitor_id into a bucket 0–99.
- * This is used for rollout_percentage gating:
- *   hash(visitor_id) % 100 < rollout_percentage
  */
 export function hashVisitorToBucket(visitorId: string): number {
   const hash = createHash("sha256").update(visitorId).digest();
-  // Use the first 4 bytes as a big-endian unsigned int.
   const bucket = hash.readUInt32BE(0) % 100;
   return bucket;
 }
 
 /**
- * Core ad decision engine implementing the spec:
- *
- * Inputs:
- *  - visitor (segment, suppression, visitor_id)
- *  - ad_config row
- *
- * Hard locks:
- *  - user_segment == internal  -> NO ADS
- *  - user_segment == premium   -> NO ADS
- *  - ads_suppressed == true    -> NO ADS
- *
- * Global lock:
- *  - global_ads_enabled == 0 or env hard kill -> NO RENDERED ADS
- *
- * Segment toggles:
- *  - daycare allowed only if ads_for_daycare == 1
- *  - organic allowed only if ads_for_organic == 1
- *
- * Rollout gate:
- *  - hash(visitor_id) % 100 < rollout_percentage
- *
- * Output:
- *  - adsEligible: segment + suppression + segment toggles + rollout
- *  - adsRendered: adsEligible + global + env kill
+ * Core ad decision engine.
  */
 export function computeAdDecision(visitor: VisitorContext, config: AdConfigRow): AdDecisionResult {
   const segment: UserSegment = visitor.userSegment;
@@ -305,7 +271,6 @@ export function computeAdDecision(visitor: VisitorContext, config: AdConfigRow):
   } else if (segment === "organic") {
     segmentAllowed = config.ads_for_organic === 1;
   } else {
-    // internal and premium are already hard-locked above.
     segmentAllowed = false;
   }
 
@@ -330,12 +295,7 @@ export function computeAdDecision(visitor: VisitorContext, config: AdConfigRow):
 }
 
 /**
- * Evaluate the ads decision engine for this request, persist an ad_visits row,
- * and return the visitor + config + decision so callers can decide whether
- * to inject ad markup.
- *
- * This is the ONLY entry point pages should use for ad decisions. Anything
- * that renders ads server-side must call this first.
+ * Run decision engine + insert ad_visits row.
  */
 export async function evaluateAdsForEvent(event: H3Event): Promise<{
   visitor: VisitorContext;
@@ -385,12 +345,6 @@ export async function evaluateAdsForEvent(event: H3Event): Promise<{
 
 /**
  * Restrict /ads dashboard access to IP + HTTP Basic Auth only.
- *
- * Rules:
- *   - There is NO cookie/segment based bypass.
- *   - ADS_DASHBOARD_IP_ALLOWLIST must contain the client IP (after normalization), otherwise 403.
- *   - ADS_DASHBOARD_BASIC_USER / ADS_DASHBOARD_BASIC_PASS must be configured.
- *   - If Basic credentials are missing/invalid -> 401 with WWW-Authenticate.
  */
 export function assertAdsDashboardAccess(event: H3Event): void {
   const debug =
@@ -519,14 +473,6 @@ export function assertAdsDashboardAccess(event: H3Event): void {
 
 /**
  * Helper for the INTERNAL login flow (/login, Google OAuth).
- *
- * Call this AFTER a successful Google login to enforce:
- *   - user_segment   = internal
- *   - ads_suppressed = true
- *   - last_login_type= google
- *
- * The visitor_id cookie is preserved (or created if missing) so
- * the same UUID is used across subdomains.
  */
 export function applyInternalLoginCookies(event: H3Event): VisitorContext {
   const domain = getCookieDomainForEvent(event);
@@ -561,22 +507,6 @@ export function applyInternalLoginCookies(event: H3Event): VisitorContext {
 
 /**
  * Helper for the PHP parent login flow (login.php).
- *
- * Pseudocode for PHP side (for reference):
- *
- *   if (strlen($username) === 6) {
- *       // PREMIUM
- *       setcookie("user_segment", "premium", $expiry, "/", ".casitaiedis.edu.mx", true, false);
- *       setcookie("ads_suppressed", "true", $expiry, "/", ".casitaiedis.edu.mx", true, false);
- *   } else {
- *       // DAYCARE
- *       setcookie("user_segment", "daycare", $expiry, "/", ".casitaiedis.edu.mx", true, false);
- *       setcookie("ads_suppressed", "false", $expiry, "/", ".casitaiedis.edu.mx", true, false);
- *   }
- *   setcookie("last_login_type", "php", $expiry, "/", ".casitaiedis.edu.mx", true, false);
- *
- * The Node helper below implements the same logic in case you ever
- * proxy or reimplement login.php in Node.
  */
 export async function applyPhpLoginCookiesForUsername(
   event: H3Event,
@@ -617,9 +547,7 @@ export async function applyPhpLoginCookiesForUsername(
 }
 
 /**
- * Utility for server routes that expect URL-encoded form submissions
- * and want a strongly-typed body. Currently used only by the /ads
- * dashboard POST handler, but kept generic for reuse.
+ * Utility to read URL-encoded form submissions.
  */
 export async function readFormBody(
   event: H3Event

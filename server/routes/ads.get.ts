@@ -1,4 +1,4 @@
-import { getRequestURL } from "h3";
+import { getRequestURL, setHeader } from "h3";
 import { getAdConfig, getAdDashboardStats } from "~/server/utils/adsDb";
 import { assertAdsDashboardAccess } from "~/server/utils/ads";
 
