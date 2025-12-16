@@ -1,4 +1,3 @@
-
 import { sendRedirect } from "h3";
 import { assertAdsDashboardAccess, readFormBody } from "~/server/utils/ads";
 import { updateAdConfig } from "~/server/utils/adsDb";

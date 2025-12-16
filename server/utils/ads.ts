@@ -1,4 +1,3 @@
-
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { H3Event } from "h3";
 import { createError, getCookie, getRequestURL, readBody, setCookie, setHeader } from "h3";
@@ -197,7 +196,6 @@ export async function getOrCreateVisitorContext(event: H3Event): Promise<Visitor
   };
 
   if (debug) {
-    // Focused diagnostics to confirm cookie normalization is behaving as expected.
     // eslint-disable-next-line no-console
     console.log("[ads] VisitorContext", {
       visitorId: visitor.visitorId,
@@ -344,106 +342,20 @@ export async function evaluateAdsForEvent(event: H3Event): Promise<{
 }
 
 /**
- * Restrict /ads dashboard access to internal users via HTTP Basic Auth,
- * backed by .env credentials. If no Basic Auth env vars are configured,
- * we fall back to the older "internal segment or IP allowlist" behavior.
+ * Restrict /ads dashboard access to IP + HTTP Basic Auth only.
  *
- * BASIC AUTH MODE (recommended for you):
- *   .env:
- *     ADS_DASHBOARD_BASIC_USER=someuser
- *     ADS_DASHBOARD_BASIC_PASS=some-strong-password
- *
- * The browser will show a username/password prompt when accessing /ads.
+ * Rules:
+ *   - There is NO cookie/segment based bypass.
+ *   - ADS_DASHBOARD_IP_ALLOWLIST must contain the client IP, otherwise 403.
+ *   - ADS_DASHBOARD_BASIC_USER / ADS_DASHBOARD_BASIC_PASS must be configured.
+ *   - If Basic credentials are missing/invalid -> 401 with WWW-Authenticate.
  */
 export function assertAdsDashboardAccess(event: H3Event): void {
   const debug =
     (process.env.DEBUG_LEGACY ?? "").toLowerCase() === "1" ||
     (process.env.DEBUG_LEGACY ?? "").toLowerCase() === "true";
 
-  const envUser =
-    process.env.ADS_DASHBOARD_BASIC_USER ??
-    process.env.NUXT_ADS_DASHBOARD_BASIC_USER ??
-    "";
-  const envPass =
-    process.env.ADS_DASHBOARD_BASIC_PASS ??
-    process.env.NUXT_ADS_DASHBOARD_BASIC_PASS ??
-    "";
-
-  const basicUser = envUser.trim();
-  const basicPass = envPass.trim();
-  const basicConfigured = basicUser.length > 0 && basicPass.length > 0;
-
-  if (basicConfigured) {
-    const rawAuthHeader = event.node.req.headers["authorization"];
-    const authHeader = Array.isArray(rawAuthHeader) ? rawAuthHeader[0] : rawAuthHeader;
-
-    const challenge = () => {
-      setHeader(
-        event,
-        "WWW-Authenticate",
-        'Basic realm="IECS-IEDIS Ads Dashboard", charset="UTF-8"'
-      );
-      throw createError({
-        statusCode: 401,
-        statusMessage: "Authentication required",
-      });
-    };
-
-    if (!authHeader || !authHeader.toString().startsWith("Basic ")) {
-      if (debug) {
-        // eslint-disable-next-line no-console
-        console.warn("[ads] Dashboard Basic Auth missing or malformed Authorization header");
-      }
-      challenge();
-    }
-
-    const base64 = authHeader.toString().slice(6).trim();
-    let decoded = "";
-    try {
-      decoded = Buffer.from(base64, "base64").toString("utf8");
-    } catch {
-      if (debug) {
-        // eslint-disable-next-line no-console
-        console.warn("[ads] Dashboard Basic Auth header could not be base64-decoded");
-      }
-      challenge();
-    }
-
-    const sepIndex = decoded.indexOf(":");
-    const user = sepIndex >= 0 ? decoded.slice(0, sepIndex) : decoded;
-    const pass = sepIndex >= 0 ? decoded.slice(sepIndex + 1) : "";
-
-    const okUser = safeEqual(user, basicUser);
-    const okPass = safeEqual(pass, basicPass);
-
-    if (!okUser || !okPass) {
-      if (debug) {
-        // eslint-disable-next-line no-console
-        console.warn("[ads] Dashboard Basic Auth invalid credentials", {
-          user,
-        });
-      }
-      challenge();
-    }
-
-    if (debug) {
-      // eslint-disable-next-line no-console
-      console.log("[ads] Dashboard access granted via HTTP Basic Auth", { user });
-    }
-    return;
-  }
-
-  // FALLBACK: legacy internal-only access using user_segment cookie or IP allowlist.
-  const seg = parseUserSegment(getCookie(event, COOKIE_USER_SEGMENT));
-
-  if (seg === "internal") {
-    if (debug) {
-      // eslint-disable-next-line no-console
-      console.log("[ads] Dashboard access granted by user_segment=internal");
-    }
-    return;
-  }
-
+  // 1) IP allowlist
   const allowListRaw = process.env.ADS_DASHBOARD_IP_ALLOWLIST ?? "";
   const allowList = allowListRaw
     .split(",")
@@ -461,30 +373,114 @@ export function assertAdsDashboardAccess(event: H3Event): void {
     clientIp = event.node.req.socket?.remoteAddress ?? "";
   }
 
-  if (allowList.length > 0 && clientIp) {
-    if (allowList.includes(clientIp)) {
-      if (debug) {
-        // eslint-disable-next-line no-console
-        console.log("[ads] Dashboard access granted by IP allowlist", { clientIp });
-      }
-      return;
+  const ipAllowed =
+    allowList.length > 0 && clientIp && allowList.includes(clientIp);
+
+  if (!ipAllowed) {
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.warn("[ads] Dashboard access denied by IP gate", {
+        clientIp,
+        allowList,
+      });
     }
+
+    throw createError({
+      statusCode: 403,
+      statusMessage: "Forbidden: Ads dashboard is internal only",
+    });
+  }
+
+  // 2) HTTP Basic Auth (always required once IP passes)
+  const envUser =
+    process.env.ADS_DASHBOARD_BASIC_USER ??
+    process.env.NUXT_ADS_DASHBOARD_BASIC_USER ??
+    "";
+  const envPass =
+    process.env.ADS_DASHBOARD_BASIC_PASS ??
+    process.env.NUXT_ADS_DASHBOARD_BASIC_PASS ??
+    "";
+
+  const basicUser = envUser.trim();
+  const basicPass = envPass.trim();
+  const basicConfigured = basicUser.length > 0 && basicPass.length > 0;
+
+  if (!basicConfigured) {
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.warn("[ads] Dashboard Basic Auth not configured; denying access");
+    }
+
+    throw createError({
+      statusCode: 403,
+      statusMessage: "Forbidden: Ads dashboard is internal only",
+    });
+  }
+
+  const rawAuthHeader = event.node.req.headers["authorization"];
+  const authHeader = Array.isArray(rawAuthHeader) ? rawAuthHeader[0] : rawAuthHeader;
+
+  const challenge = () => {
+    setHeader(
+      event,
+      "WWW-Authenticate",
+      'Basic realm="IECS-IEDIS Ads Dashboard", charset="UTF-8"'
+    );
+    throw createError({
+      statusCode: 401,
+      statusMessage: "Authentication required",
+    });
+  };
+
+  if (!authHeader || !authHeader.toString().startsWith("Basic ")) {
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.warn("[ads] Dashboard Basic Auth missing or malformed Authorization header", {
+        clientIp,
+      });
+    }
+    challenge();
+  }
+
+  const base64 = authHeader.toString().slice(6).trim();
+  let decoded = "";
+  try {
+    decoded = Buffer.from(base64, "base64").toString("utf8");
+  } catch {
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.warn("[ads] Dashboard Basic Auth header could not be base64-decoded", {
+        clientIp,
+      });
+    }
+    challenge();
+  }
+
+  const sepIndex = decoded.indexOf(":");
+  const user = sepIndex >= 0 ? decoded.slice(0, sepIndex) : decoded;
+  const pass = sepIndex >= 0 ? decoded.slice(sepIndex + 1) : "";
+
+  const okUser = safeEqual(user, basicUser);
+  const okPass = safeEqual(pass, basicPass);
+
+  if (!okUser || !okPass) {
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.warn("[ads] Dashboard Basic Auth invalid credentials", {
+        user,
+        clientIp,
+      });
+    }
+    challenge();
   }
 
   if (debug) {
     // eslint-disable-next-line no-console
-    console.warn("[ads] Dashboard access denied", {
-      userSegment: seg,
+    console.log("[ads] Dashboard access granted via IP + HTTP Basic Auth", {
+      user,
       clientIp,
-      allowList,
-      basicConfigured,
     });
   }
-
-  throw createError({
-    statusCode: 403,
-    statusMessage: "Forbidden: Ads dashboard is internal only",
-  });
 }
 
 /**

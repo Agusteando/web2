@@ -1,4 +1,3 @@
-
 import { getRequestURL } from "h3";
 import { getAdConfig, getAdDashboardStats } from "~/server/utils/adsDb";
 import { assertAdsDashboardAccess } from "~/server/utils/ads";
