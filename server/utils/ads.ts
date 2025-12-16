@@ -132,6 +132,47 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 /**
+ * Normalize an IP string so IPv6 loopback / IPv4-mapped addresses collapse to IPv4.
+ *
+ * Examples:
+ *   "::1"                 -> "127.0.0.1"
+ *   "::ffff:127.0.0.1"    -> "127.0.0.1"
+ *   "::ffff:148.230.1.2"  -> "148.230.1.2"
+ */
+function normalizeIp(raw: string | undefined | null): string {
+  if (!raw) return "";
+  let ip = raw.trim();
+
+  // IPv6 loopback
+  if (ip === "::1") return "127.0.0.1";
+
+  // IPv4-mapped IPv6 addresses
+  if (ip.startsWith("::ffff:")) {
+    ip = ip.slice("::ffff:".length);
+  }
+
+  return ip;
+}
+
+/**
+ * Extract the client IP (considering X-Forwarded-For) and normalize it.
+ */
+function getClientIp(event: H3Event): string {
+  const xff = event.node.req.headers["x-forwarded-for"];
+  let ip = "";
+
+  if (typeof xff === "string" && xff.length > 0) {
+    ip = xff.split(",")[0].trim();
+  } else if (Array.isArray(xff) && xff.length > 0) {
+    ip = xff[0].split(",")[0].trim();
+  } else {
+    ip = event.node.req.socket?.remoteAddress ?? "";
+  }
+
+  return normalizeIp(ip);
+}
+
+/**
  * Ensure visitor_id, user_segment, ads_suppressed and last_login_type
  * cookies exist and are normalized for this request.
  *
@@ -196,6 +237,7 @@ export async function getOrCreateVisitorContext(event: H3Event): Promise<Visitor
   };
 
   if (debug) {
+    // Focused diagnostics to confirm cookie normalization is behaving as expected.
     // eslint-disable-next-line no-console
     console.log("[ads] VisitorContext", {
       visitorId: visitor.visitorId,
@@ -346,7 +388,7 @@ export async function evaluateAdsForEvent(event: H3Event): Promise<{
  *
  * Rules:
  *   - There is NO cookie/segment based bypass.
- *   - ADS_DASHBOARD_IP_ALLOWLIST must contain the client IP, otherwise 403.
+ *   - ADS_DASHBOARD_IP_ALLOWLIST must contain the client IP (after normalization), otherwise 403.
  *   - ADS_DASHBOARD_BASIC_USER / ADS_DASHBOARD_BASIC_PASS must be configured.
  *   - If Basic credentials are missing/invalid -> 401 with WWW-Authenticate.
  */
@@ -359,22 +401,12 @@ export function assertAdsDashboardAccess(event: H3Event): void {
   const allowListRaw = process.env.ADS_DASHBOARD_IP_ALLOWLIST ?? "";
   const allowList = allowListRaw
     .split(",")
-    .map((v) => v.trim())
+    .map((v) => normalizeIp(v))
     .filter((v) => v.length > 0);
 
-  let clientIp = "";
+  const clientIp = getClientIp(event);
 
-  const xff = event.node.req.headers["x-forwarded-for"];
-  if (typeof xff === "string" && xff.length > 0) {
-    clientIp = xff.split(",")[0].trim();
-  } else if (Array.isArray(xff) && xff.length > 0) {
-    clientIp = xff[0].split(",")[0].trim();
-  } else {
-    clientIp = event.node.req.socket?.remoteAddress ?? "";
-  }
-
-  const ipAllowed =
-    allowList.length > 0 && clientIp && allowList.includes(clientIp);
+  const ipAllowed = allowList.length > 0 && clientIp && allowList.includes(clientIp);
 
   if (!ipAllowed) {
     if (debug) {
@@ -408,7 +440,9 @@ export function assertAdsDashboardAccess(event: H3Event): void {
   if (!basicConfigured) {
     if (debug) {
       // eslint-disable-next-line no-console
-      console.warn("[ads] Dashboard Basic Auth not configured; denying access");
+      console.warn("[ads] Dashboard Basic Auth not configured; denying access", {
+        clientIp,
+      });
     }
 
     throw createError({
