@@ -1,3 +1,4 @@
+
 import { getRequestURL, setHeader } from "h3";
 import { getAdConfig, getAdDashboardStats } from "~/server/utils/adsDb";
 import { assertAdsDashboardAccess } from "~/server/utils/ads";
@@ -10,8 +11,61 @@ export default defineEventHandler(async (event) => {
   const url = getRequestURL(event);
 
   const globalEnabled = config.global_ads_enabled === 1;
+  const internalEnabled = config.ads_for_internal === 1;
+  const premiumEnabled = config.ads_for_premium === 1;
   const daycareEnabled = config.ads_for_daycare === 1;
   const organicEnabled = config.ads_for_organic === 1;
+
+  const segmentOrder = ["internal", "premium", "daycare", "organic"] as const;
+  const segmentLabels: Record<string, string> = {
+    internal: "internal · staff (Google /login)",
+    premium: "premium · familias particulares (login.php, 6 caracteres)",
+    daycare: "daycare · guardería (login.php, ≠ 6 caracteres)",
+    organic: "organic · nunca autenticado",
+  };
+
+  const bySegmentIndex: Record<
+    string,
+    { visits: number; eligible: number; rendered: number }
+  > = {};
+
+  for (const row of stats.bySegment) {
+    bySegmentIndex[row.user_segment] = {
+      visits: row.visits,
+      eligible: row.eligible,
+      rendered: row.rendered,
+    };
+  }
+
+  const segmentConfigEnabled: Record<string, boolean> = {
+    internal: internalEnabled,
+    premium: premiumEnabled,
+    daycare: daycareEnabled,
+    organic: organicEnabled,
+  };
+
+  const segmentRowsHtml = segmentOrder
+    .map((key) => {
+      const metrics = bySegmentIndex[key] || { visits: 0, eligible: 0, rendered: 0 };
+      const enabled = segmentConfigEnabled[key];
+      const pillClass = enabled ? "pill-on" : "pill-off";
+      const pillText = enabled ? "ON · puede ser elegible" : "OFF · nunca elegible";
+
+      return `
+              <tr>
+                <td>${segmentLabels[key]}</td>
+                <td>
+                  <span class="pill ${pillClass}">
+                    ${pillText}
+                  </span>
+                </td>
+                <td>${metrics.visits}</td>
+                <td>${metrics.eligible}</td>
+                <td>${metrics.rendered}</td>
+              </tr>
+            `;
+    })
+    .join("");
 
   const html = `<!doctype html>
 <html lang="es">
@@ -237,6 +291,32 @@ export default defineEventHandler(async (event) => {
     a:hover {
       text-decoration: underline;
     }
+    .segment-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.75rem;
+    }
+    .segment-cell {
+      border-radius: 0.75rem;
+      border: 1px solid var(--border);
+      padding: 0.75rem 0.85rem;
+      background: rgba(15,23,42,0.9);
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      cursor: pointer;
+    }
+    .segment-title {
+      font-size: 0.85rem;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .segment-desc {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
   </style>
 </head>
 <body>
@@ -274,7 +354,33 @@ export default defineEventHandler(async (event) => {
 
     <div class="card">
       <div class="card-header">
-        <h2>Configuración actual</h2>
+        <h2>Matriz de control por segmento</h2>
+        <p class="hint">
+          Esta tabla combina configuración y KPIs por segmento. Si un segmento está en <strong>OFF</strong>,
+          nunca es elegible para anuncios (aunque se sigan registrando visitas).
+        </p>
+      </div>
+      <div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Segmento</th>
+              <th>Configuración</th>
+              <th>Visitas</th>
+              <th>Elegibles</th>
+              <th>Renderizados</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${segmentRowsHtml}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h2>Configuración global</h2>
       </div>
       <div class="grid grid-2">
         <div class="stat">
@@ -287,32 +393,6 @@ export default defineEventHandler(async (event) => {
           <span class="stat-label">Rollout porcentaje</span>
           <span class="stat-value">${config.rollout_percentage}%</span>
         </div>
-      </div>
-      <div style="margin-top: 1rem;">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Segmento</th>
-              <th>Visitas</th>
-              <th>Elegibles</th>
-              <th>Renderizados</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${stats.bySegment
-              .map(
-                (row) => `
-              <tr>
-                <td>${row.user_segment}</td>
-                <td>${row.visits}</td>
-                <td>${row.eligible}</td>
-                <td>${row.rendered}</td>
-              </tr>
-            `
-              )
-              .join("")}
-          </tbody>
-        </table>
       </div>
     </div>
 
@@ -338,16 +418,50 @@ export default defineEventHandler(async (event) => {
           </div>
 
           <div class="form-row">
-            <label>
-              <input type="checkbox" name="ads_for_daycare" value="1" ${daycareEnabled ? "checked" : ""} />
-              Permitir anuncios para segmento <code>daycare</code>
-            </label>
-            <label>
-              <input type="checkbox" name="ads_for_organic" value="1" ${organicEnabled ? "checked" : ""} />
-              Permitir anuncios para segmento <code>organic</code>
-            </label>
+            <div class="segment-grid">
+              <label class="segment-cell">
+                <div class="segment-title">
+                  <input type="checkbox" name="ads_for_internal" value="1" ${internalEnabled ? "checked" : ""} />
+                  <span><code>internal</code> · staff</span>
+                </div>
+                <p class="segment-desc">
+                  Usuarios internos autenticados vía <code>/login</code> con Google OAuth.
+                </p>
+              </label>
+
+              <label class="segment-cell">
+                <div class="segment-title">
+                  <input type="checkbox" name="ads_for_premium" value="1" ${premiumEnabled ? "checked" : ""} />
+                  <span><code>premium</code> · familias particulares</span>
+                </div>
+                <p class="segment-desc">
+                  Padres que se autentican en <code>login.php</code> con usuario de 6 caracteres.
+                </p>
+              </label>
+
+              <label class="segment-cell">
+                <div class="segment-title">
+                  <input type="checkbox" name="ads_for_daycare" value="1" ${daycareEnabled ? "checked" : ""} />
+                  <span><code>daycare</code> · guardería</span>
+                </div>
+                <p class="segment-desc">
+                  Padres que se autentican en <code>login.php</code> con usuario de longitud distinta de 6.
+                </p>
+              </label>
+
+              <label class="segment-cell">
+                <div class="segment-title">
+                  <input type="checkbox" name="ads_for_organic" value="1" ${organicEnabled ? "checked" : ""} />
+                  <span><code>organic</code> · tráfico orgánico</span>
+                </div>
+                <p class="segment-desc">
+                  Visitantes sin login previo en este navegador (segmento orgánico).
+                </p>
+              </label>
+            </div>
             <p class="hint">
-              Los segmentos <code>internal</code> y <code>premium</code> tienen bloqueo duro y nunca verán anuncios.
+              Usa esta matriz como control fino por segmento. Si un segmento está en <strong>OFF</strong>,
+              nunca será elegible para anuncios, incluso si el rollout es alto.
             </p>
           </div>
 
@@ -394,7 +508,7 @@ export default defineEventHandler(async (event) => {
         </div>
       </div>
       <ul class="hint">
-        <li>Los segmentos <code>internal</code> y <code>premium</code> nunca reciben anuncios, sin excepción.</li>
+        <li>Los segmentos <code>internal</code> y <code>premium</code> solo recibirán anuncios si se habilitan explícitamente en la matriz y pasan el rollout.</li>
         <li>Las cookies de segmentación se comparten en el dominio <code>.casitaiedis.edu.mx</code> y persisten tras logout.</li>
         <li>No implementes ocultado de anuncios por CSS ni toggles en el cliente: todo debe pasar por este panel.</li>
         <li>Para desactivar todo al instante, pon <code>global_ads_enabled = 0</code> o usa el env kill switch.</li>

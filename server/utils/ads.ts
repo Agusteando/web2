@@ -1,3 +1,4 @@
+
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { H3Event } from "h3";
 import { createError, getCookie, getRequestURL, readBody, setCookie, setHeader } from "h3";
@@ -254,38 +255,55 @@ export function hashVisitorToBucket(visitorId: string): number {
 
 /**
  * Core ad decision engine.
+ *
+ * - Respeta un bloqueo duro por cookie ads_suppressed=true.
+ * - Luego aplica la matriz de toggles por segmento definida en ad_config.
+ * - Después aplica el gateo por rollout (hash(visitor_id) % 100).
+ * - Finalmente aplica el kill switch global + env.
  */
 export function computeAdDecision(visitor: VisitorContext, config: AdConfigRow): AdDecisionResult {
   const segment: UserSegment = visitor.userSegment;
-  const hardLocked =
-    segment === "internal" || segment === "premium" || visitor.adsSuppressed === true;
 
-  if (hardLocked) {
+  // Bloqueo duro por cookie (por ejemplo, opt-out individual).
+  if (visitor.adsSuppressed === true) {
     return { adsEligible: false, adsRendered: false };
   }
 
+  // Matriz de toggles por segmento (incluye internal y premium).
   let segmentAllowed = false;
-
-  if (segment === "daycare") {
-    segmentAllowed = config.ads_for_daycare === 1;
-  } else if (segment === "organic") {
-    segmentAllowed = config.ads_for_organic === 1;
-  } else {
-    segmentAllowed = false;
+  switch (segment) {
+    case "internal":
+      segmentAllowed = config.ads_for_internal === 1;
+      break;
+    case "premium":
+      segmentAllowed = config.ads_for_premium === 1;
+      break;
+    case "daycare":
+      segmentAllowed = config.ads_for_daycare === 1;
+      break;
+    case "organic":
+      segmentAllowed = config.ads_for_organic === 1;
+      break;
+    default:
+      segmentAllowed = false;
+      break;
   }
 
   if (!segmentAllowed) {
     return { adsEligible: false, adsRendered: false };
   }
 
+  // Gateo por rollout (0–100) sobre visitor_id.
   const bucket = hashVisitorToBucket(visitor.visitorId);
-  const rollout = Number.isFinite(config.rollout_percentage)
-    ? Math.max(0, Math.min(100, Number(config.rollout_percentage)))
+  const rolloutRaw = Number(config.rollout_percentage);
+  const rollout = Number.isFinite(rolloutRaw)
+    ? Math.max(0, Math.min(100, rolloutRaw))
     : 0;
 
   const withinRollout = bucket < rollout;
   const adsEligible = withinRollout;
 
+  // Kill switch global + env.
   const envHardDisabled = isEnvAdsHardDisabled();
   const globalEnabled = config.global_ads_enabled === 1 && !envHardDisabled;
 
@@ -317,6 +335,8 @@ export async function evaluateAdsForEvent(event: H3Event): Promise<{
       userSegment: visitor.userSegment,
       adsSuppressed: visitor.adsSuppressed,
       global_ads_enabled: config.global_ads_enabled,
+      ads_for_internal: config.ads_for_internal,
+      ads_for_premium: config.ads_for_premium,
       ads_for_daycare: config.ads_for_daycare,
       ads_for_organic: config.ads_for_organic,
       rollout_percentage: config.rollout_percentage,
@@ -473,6 +493,8 @@ export function assertAdsDashboardAccess(event: H3Event): void {
 
 /**
  * Helper for the INTERNAL login flow (/login, Google OAuth).
+ *
+ * Ahora ya no fuerza ads_suppressed=true; el control se hace vía /ads.
  */
 export function applyInternalLoginCookies(event: H3Event): VisitorContext {
   const domain = getCookieDomainForEvent(event);
@@ -494,19 +516,23 @@ export function applyInternalLoginCookies(event: H3Event): VisitorContext {
 
   setCookie(event, COOKIE_VISITOR_ID, visitorId, cookieOptions);
   setCookie(event, COOKIE_USER_SEGMENT, "internal", cookieOptions);
-  setCookie(event, COOKIE_ADS_SUPPRESSED, "true", cookieOptions);
+  // Por defecto, no suprimimos anuncios: se controla con ads_for_internal en /ads.
+  setCookie(event, COOKIE_ADS_SUPPRESSED, "false", cookieOptions);
   setCookie(event, COOKIE_LAST_LOGIN_TYPE, "google", cookieOptions);
 
   return {
     visitorId,
     userSegment: "internal",
-    adsSuppressed: true,
+    adsSuppressed: false,
     lastLoginType: "google",
   };
 }
 
 /**
  * Helper for the PHP parent login flow (login.php).
+ *
+ * PREMIUM y DAYCARE se segmentan por longitud de usuario, pero la
+ * exposición a anuncios se controla siempre desde ad_config.
  */
 export async function applyPhpLoginCookiesForUsername(
   event: H3Event,
@@ -522,7 +548,9 @@ export async function applyPhpLoginCookiesForUsername(
 
   const isPremium = username.length === 6;
   const userSegment: UserSegment = isPremium ? "premium" : "daycare";
-  const adsSuppressed = isPremium;
+
+  // No suprimimos anuncios por cookie; se controla desde /ads por segmento.
+  const adsSuppressed = false;
 
   const cookieOptions = {
     path: "/",

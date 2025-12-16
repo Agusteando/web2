@@ -94,6 +94,8 @@ export async function getAdConfig(): Promise<AdConfigRow> {
  */
 export async function updateAdConfig(partial: {
   global_ads_enabled?: boolean;
+  ads_for_internal?: boolean;
+  ads_for_premium?: boolean;
   ads_for_daycare?: boolean;
   ads_for_organic?: boolean;
   rollout_percentage?: number;
@@ -106,6 +108,16 @@ export async function updateAdConfig(partial: {
   if (typeof partial.global_ads_enabled === "boolean") {
     sets.push("global_ads_enabled = ?");
     values.push(partial.global_ads_enabled ? 1 : 0);
+  }
+
+  if (typeof partial.ads_for_internal === "boolean") {
+    sets.push("ads_for_internal = ?");
+    values.push(partial.ads_for_internal ? 1 : 0);
+  }
+
+  if (typeof partial.ads_for_premium === "boolean") {
+    sets.push("ads_for_premium = ?");
+    values.push(partial.ads_for_premium ? 1 : 0);
   }
 
   if (typeof partial.ads_for_daycare === "boolean") {
