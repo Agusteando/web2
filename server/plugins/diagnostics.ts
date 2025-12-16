@@ -1,3 +1,4 @@
+
 import { randomBytes } from "node:crypto";
 
 /**
@@ -9,22 +10,32 @@ import { randomBytes } from "node:crypto";
  *   x-diag-id, x-diag-ms, x-diag-bytes, x-diag-path
  */
 export default defineNitroPlugin((nitro) => {
-  const enabled = process.env.DEBUG_LEGACY === "1" || process.env.DEBUG_LEGACY === "true";
+  const enabled =
+    (process.env.DEBUG_LEGACY ?? "").toLowerCase() === "1" ||
+    (process.env.DEBUG_LEGACY ?? "").toLowerCase() === "true";
+
   if (!enabled) return;
 
   nitro.hooks.hook("request", (event) => {
     const id = randomBytes(4).toString("hex");
+
+    if (!event.context) {
+      (event as any).context = {};
+    }
+
     (event.context as any).__diag = { id, t0: Date.now() };
 
     const url = event.node.req.url || "/";
     const method = event.node.req.method || "GET";
 
     // Reduce noise a bit: still log everything, but make it readable.
+    // eslint-disable-next-line no-console
     console.log(`[diag ${id}] -> ${method} ${url}`);
   });
 
   nitro.hooks.hook("beforeResponse", (event, res) => {
-    const diag = (event.context as any).__diag;
+    const ctx = (event as any)?.context;
+    const diag = ctx?.__diag;
     if (!diag) return;
 
     const ms = Date.now() - (diag.t0 || Date.now());
@@ -46,13 +57,17 @@ export default defineNitroPlugin((nitro) => {
     setHeader(event, "x-diag-bytes", String(bytes));
     setHeader(event, "x-diag-path", String(path));
 
+    // eslint-disable-next-line no-console
     console.log(`[diag ${diag.id}] <- ${status} ${ms}ms bytes=${bytes}`);
   });
 
   nitro.hooks.hook("error", (error, event) => {
-    const diag = event ? (event.context as any).__diag : null;
+    const ctx = event ? (event as any).context : undefined;
+    const diag = ctx?.__diag;
     const id = diag?.id ?? "????";
     const url = event?.node?.req?.url ?? "(no-url)";
+
+    // eslint-disable-next-line no-console
     console.error(`[diag ${id}] !! ERROR on ${url}\n`, error);
   });
 });

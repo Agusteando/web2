@@ -1,8 +1,10 @@
-import { load } from "cheerio";
+
+import { load, type CheerioAPI } from "cheerio";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fetchNoticias } from "~/server/utils/news";
 import { escapeHtml, formatFechaEsMX, normalizeImageSrc } from "~/server/utils/format";
+import { evaluateAdsForEvent } from "~/server/utils/ads";
 
 function renderPostCol(opts: {
   id: number;
@@ -57,25 +59,263 @@ function renderPostCol(opts: {
   `;
 }
 
+/**
+ * Read AdSense configuration for the home-page banner from environment.
+ *
+ * REQUIRED env vars (per environment):
+ *   - ADSENSE_CLIENT_ID            (e.g. "ca-pub-1234567890123456")
+ *       or NUXT_ADSENSE_CLIENT_ID
+ *       or NUXT_PUBLIC_ADSENSE_CLIENT_ID
+ *
+ *   - ADSENSE_HOME_SLOT_ID         (e.g. "9876543210")
+ *       or NUXT_ADSENSE_HOME_SLOT_ID
+ *       or NUXT_PUBLIC_ADSENSE_HOME_SLOT_ID
+ *
+ * PRODUCTION CHECKLIST:
+ *   1) In your AdSense account, create a responsive display unit for the home page.
+ *   2) Copy the "data-ad-client" value into ADSENSE_CLIENT_ID.
+ *   3) Copy the "data-ad-slot" value into ADSENSE_HOME_SLOT_ID.
+ *   4) Deploy with these env vars set; do NOT hardcode IDs in source.
+ */
+function getAdsenseConfigForHome(debug: boolean): { clientId: string; slotId: string } | null {
+  const envClient =
+    process.env.ADSENSE_CLIENT_ID ??
+    process.env.NUXT_ADSENSE_CLIENT_ID ??
+    process.env.NUXT_PUBLIC_ADSENSE_CLIENT_ID ??
+    "";
+  const envSlot =
+    process.env.ADSENSE_HOME_SLOT_ID ??
+    process.env.NUXT_ADSENSE_HOME_SLOT_ID ??
+    process.env.NUXT_PUBLIC_ADSENSE_HOME_SLOT_ID ??
+    "";
+
+  const clientId = envClient.trim();
+  const slotId = envSlot.trim();
+
+  if (!clientId || !slotId) {
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.warn("[ads] AdSense env vars missing, skipping home ad strip", {
+        ADSENSE_CLIENT_ID: !!process.env.ADSENSE_CLIENT_ID,
+        NUXT_ADSENSE_CLIENT_ID: !!process.env.NUXT_ADSENSE_CLIENT_ID,
+        NUXT_PUBLIC_ADSENSE_CLIENT_ID: !!process.env.NUXT_PUBLIC_ADSENSE_CLIENT_ID,
+        ADSENSE_HOME_SLOT_ID: !!process.env.ADSENSE_HOME_SLOT_ID,
+        NUXT_ADSENSE_HOME_SLOT_ID: !!process.env.NUXT_ADSENSE_HOME_SLOT_ID,
+        NUXT_PUBLIC_ADSENSE_HOME_SLOT_ID: !!process.env.NUXT_PUBLIC_ADSENSE_HOME_SLOT_ID,
+      });
+    }
+    return null;
+  }
+
+  return { clientId, slotId };
+}
+
+/**
+ * Ensure the AdSense loader script is present in <head>:
+ *
+ *   <script async
+ *           src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXX"
+ *           crossorigin="anonymous"></script>
+ *
+ * Loader is only injected when:
+ *   - the decision engine says adsRendered=true
+ *   - valid env config exists (client + slot)
+ */
+function ensureAdsenseLoader($: CheerioAPI, clientId: string, debug: boolean): void {
+  const head = $("head").first();
+  if (!head.length) {
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.warn("[ads] <head> not found; cannot inject AdSense loader");
+    }
+    return;
+  }
+
+  const existing = $(
+    'script[src*="pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"]'
+  ).first();
+
+  if (existing.length) {
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.log("[ads] AdSense loader already present in <head>");
+    }
+    return;
+  }
+
+  const safeClient = escapeHtml(clientId);
+  const src = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${safeClient}`;
+
+  head.append(
+    `
+    <script async src="${src}" crossorigin="anonymous"></script>
+  `
+  );
+
+  if (debug) {
+    // eslint-disable-next-line no-console
+    console.log("[ads] Injected AdSense loader into <head>");
+  }
+}
+
+/**
+ * Render the horizontal AdSense banner strip that appears near the
+ * top of the home page for eligible visitors.
+ *
+ * This block is fully production-ready: no placeholders, no TODOs.
+ * It uses the standard responsive AdSense snippet and relies on the
+ * decision engine + DB control plane for segmentation and rollout.
+ */
+function renderHomeAdsStrip(clientId: string, slotId: string): string {
+  const safeClient = escapeHtml(clientId);
+  const safeSlot = escapeHtml(slotId);
+
+  return `
+    <section class="tp-ad-strip-area pt-60 pb-60">
+      <div class="container">
+        <div class="row justify-content-center">
+          <div class="col-xl-10 col-lg-11 col-md-12">
+            <div class="tp-ad-strip tp-bg-common-white tp-round-24 d-flex flex-column flex-md-row align-items-center justify-content-between">
+              <div class="tp-ad-strip-text mb-3 mb-md-0 text-center text-md-start">
+                <span class="tp-ff-dm fw-600 fs-14 ls-m-2 tp-text-grey-7 text-uppercase d-inline-block mb-10">
+                  Publicidad
+                </span>
+                <h3 class="tp-ff-familjen fs-32 lh-130-per ls-m-3 tp-text-common-black-5 mb-0">
+                  Mensajes y anuncios relevantes para nuestra comunidad IECS–IEDIS.
+                </h3>
+              </div>
+              <div class="tp-ad-strip-slot w-100 w-md-auto mt-3 mt-md-0">
+                <!-- Google AdSense: home horizontal responsive -->
+                <ins class="adsbygoogle"
+                     style="display:block"
+                     data-ad-client="${safeClient}"
+                     data-ad-slot="${safeSlot}"
+                     data-ad-format="auto"
+                     data-full-width-responsive="true"></ins>
+                <script>
+                  (adsbygoogle = window.adsbygoogle || []).push({});
+                </script>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+/**
+ * Insert the AdSense strip into the legacy index.html DOM in a natural
+ * location that matches your existing layout:
+ *
+ * Preferred:
+ *   Between the hero and the first .tp-counter-area.
+ *
+ * Fallbacks:
+ *   - After .tp-hero-area
+ *   - At the top of <main>
+ */
+function injectHomeAdsStrip(
+  $: CheerioAPI,
+  clientId: string,
+  slotId: string,
+  debug: boolean
+): void {
+  ensureAdsenseLoader($, clientId, debug);
+
+  const adHtml = renderHomeAdsStrip(clientId, slotId);
+
+  const heroArea = $(".tp-hero-area").first();
+  const counterArea = $(".tp-counter-area").first();
+  const main = $("main").first();
+
+  if (heroArea.length && counterArea.length) {
+    counterArea.first().before(adHtml);
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.log("[ads] Injected home AdSense strip between .tp-hero-area and .tp-counter-area");
+    }
+    return;
+  }
+
+  if (heroArea.length) {
+    heroArea.after(adHtml);
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.log("[ads] Injected home AdSense strip after .tp-hero-area (fallback)");
+    }
+    return;
+  }
+
+  if (main.length) {
+    main.prepend(adHtml);
+    if (debug) {
+      // eslint-disable-next-line no-console
+      console.log("[ads] Injected home AdSense strip at top of <main> (fallback)");
+    }
+    return;
+  }
+
+  if (debug) {
+    // eslint-disable-next-line no-console
+    console.warn("[ads] Could not find any injection target for home AdSense strip");
+  }
+}
+
 export default defineEventHandler(async (event) => {
+  const debug =
+    (process.env.DEBUG_LEGACY ?? "").toLowerCase() === "1" ||
+    (process.env.DEBUG_LEGACY ?? "").toLowerCase() === "true";
+
   const tplPathDev = join(process.cwd(), "public", "legacy", "index.html");
-const tplPathProd = join(process.cwd(), ".output", "public", "legacy", "index.html");
-const tplPath = await (async () => {
-  try {
-    await readFile(tplPathDev, "utf-8");
-    return tplPathDev;
-  } catch {}
-  return tplPathProd;
-})();
+  const tplPathProd = join(process.cwd(), ".output", "public", "legacy", "index.html");
+  const tplPath = await (async () => {
+    try {
+      await readFile(tplPathDev, "utf-8");
+      return tplPathDev;
+    } catch {
+      // fall back to production path when dev file is not present
+    }
+    return tplPathProd;
+  })();
 
-const html = await readFile(tplPath, "utf-8");
+  const html = await readFile(tplPath, "utf-8");
 
-  // Fetch latest 3 noticias
+  // 1) Run the centralized ads decision engine (segmentation, kill switches, rollout)
+  //    and record an ad_visits row for this request.
+  const { decision } = await evaluateAdsForEvent(event);
+
+  // 2) Fetch latest 3 noticias for the dynamic blog section.
   const noticias = await fetchNoticias(3);
 
   const $ = load(html, { decodeEntities: false });
 
-  // Locate the blog section and the posts row (2nd direct .row inside the container)
+  // 3) Home-page AdSense strip:
+  //
+  //    - Only injected when the decision engine says adsRendered=true
+  //    - AND when the required AdSense env vars are present
+  //
+  //    PHASE 0 (SOAK): keep ad_config.global_ads_enabled = 0
+  //      -> decision.adsRendered will be false, no script or ads injected.
+  //
+  //    PHASE 1 (SOFT LAUNCH): set global_ads_enabled=1, ads_for_daycare/organic as desired,
+  //      rollout_percentage=5–10, with real AdSense IDs configured in env.
+  //
+  //    PHASE 2 (SCALE): slowly increase rollout_percentage via /ads dashboard.
+  if (decision.adsRendered) {
+    const adsenseCfg = getAdsenseConfigForHome(debug);
+    if (adsenseCfg) {
+      injectHomeAdsStrip($, adsenseCfg.clientId, adsenseCfg.slotId, debug);
+    } else if (debug) {
+      // eslint-disable-next-line no-console
+      console.log("[ads] Decision allowed ads but AdSense config is missing; no banner rendered");
+    }
+  } else if (debug) {
+    // eslint-disable-next-line no-console
+    console.log("[ads] Home ad strip not rendered for this visit (decision.adsRendered=false)");
+  }
+
+  // 4) Inject the latest noticias into the existing blog section.
   const blogArea = $(".tp-blog-area").first();
   if (blogArea.length) {
     const container = blogArea.find(".container-fluid.container-1824").first();
@@ -86,7 +326,7 @@ const html = await readFile(tplPath, "utf-8");
       const fallbacks = [
         "assets/img/IECS-IEDIS IMAGES/ex-news-578x433.webp",
         "assets/img/IECS-IEDIS IMAGES/ex-news2-578x433.webp",
-        "assets/img/IECS-IEDIS IMAGES/ex-news3-578x433.webp"
+        "assets/img/IECS-IEDIS IMAGES/ex-news3-578x433.webp",
       ];
       const fades: Array<"left" | "bottom" | "right"> = ["left", "bottom", "right"];
 
@@ -100,7 +340,7 @@ const html = await readFile(tplPath, "utf-8");
           titulo: n.titulo,
           href,
           imgSrc: img,
-          fadeFrom: fades[i] || "bottom"
+          fadeFrom: fades[i] || "bottom",
         });
       });
 
