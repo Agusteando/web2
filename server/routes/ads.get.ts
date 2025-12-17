@@ -16,58 +16,127 @@ export default defineEventHandler(async (event) => {
   const daycareEnabled = config.ads_for_daycare === 1;
   const organicEnabled = config.ads_for_organic === 1;
 
-  const segmentOrder = ["internal", "premium", "daycare", "organic"] as const;
-  const segmentLabels: Record<string, string> = {
-    internal: "internal · staff (Google /login)",
-    premium: "premium · familias particulares (login.php, 6 caracteres)",
-    daycare: "daycare · guardería (login.php, ≠ 6 caracteres)",
-    organic: "organic · nunca autenticado",
-  };
+  type SegmentKey = "internal" | "premium" | "daycare" | "organic";
+
+  const segmentDefs: Array<{
+    key: SegmentKey;
+    inputName: string;
+    label: string;
+    description: string;
+  }> = [
+    {
+      key: "daycare",
+      inputName: "ads_for_daycare",
+      label: "guardería (login.php, usuario ≠ 6 caracteres)",
+      description: "Padres y madres con cuentas de guardería. Suele ser el primer grupo recomendado para iniciar.",
+    },
+    {
+      key: "organic",
+      inputName: "ads_for_organic",
+      label: "tráfico orgánico (sin login)",
+      description: "Visitantes que nunca han iniciado sesión en este navegador.",
+    },
+    {
+      key: "premium",
+      inputName: "ads_for_premium",
+      label: "familias particulares (login.php, usuario de 6 caracteres)",
+      description: "Familias premium con mensualidad. Habilita con cuidado cuando ya tengas confianza en el sistema.",
+    },
+    {
+      key: "internal",
+      inputName: "ads_for_internal",
+      label: "staff interno (/login con Google)",
+      description: "Equipo interno y personal administrativo. Útil para revisiones internas o pruebas.",
+    },
+  ];
 
   const bySegmentIndex: Record<
-    string,
+    SegmentKey,
     { visits: number; eligible: number; rendered: number }
-  > = {};
+  > = {
+    internal: { visits: 0, eligible: 0, rendered: 0 },
+    premium: { visits: 0, eligible: 0, rendered: 0 },
+    daycare: { visits: 0, eligible: 0, rendered: 0 },
+    organic: { visits: 0, eligible: 0, rendered: 0 },
+  };
 
   for (const row of stats.bySegment) {
-    bySegmentIndex[row.user_segment] = {
-      visits: row.visits,
-      eligible: row.eligible,
-      rendered: row.rendered,
-    };
+    const key = row.user_segment as SegmentKey;
+    if (bySegmentIndex[key]) {
+      bySegmentIndex[key] = {
+        visits: row.visits,
+        eligible: row.eligible,
+        rendered: row.rendered,
+      };
+    }
   }
 
-  const segmentConfigEnabled: Record<string, boolean> = {
+  const segmentEnabled: Record<SegmentKey, boolean> = {
     internal: internalEnabled,
     premium: premiumEnabled,
     daycare: daycareEnabled,
     organic: organicEnabled,
   };
 
-  const segmentRowsHtml = segmentOrder
-    .map((key) => {
-      const metrics = bySegmentIndex[key] || { visits: 0, eligible: 0, rendered: 0 };
-      const enabled = segmentConfigEnabled[key];
-      const pillClass = enabled ? "pill-on" : "pill-off";
-      const pillText = enabled
-        ? "ON · puede ser elegible"
-        : "OFF · sin elegibilidad mientras esté desactivado";
+  const segmentCardsHtml = segmentDefs
+    .map((seg) => {
+      const metrics = bySegmentIndex[seg.key];
+      const enabled = segmentEnabled[seg.key];
+      const cardStateClass = enabled ? "segment-on" : "segment-off";
+      const statusText = enabled ? "Segmento activo" : "Segmento apagado";
+      const statusDetail = enabled
+        ? "Puede recibir anuncios cuando el kill switch global está en ON."
+        : "No recibe anuncios mientras este segmento esté en OFF.";
 
       return `
-              <tr>
-                <td>${segmentLabels[key]}</td>
-                <td>
-                  <span class="pill ${pillClass}">
-                    ${pillText}
-                  </span>
-                </td>
-                <td>${metrics.visits}</td>
-                <td>${metrics.eligible}</td>
-                <td>${metrics.rendered}</td>
-              </tr>
-            `;
+        <label class="segment-card ${cardStateClass}">
+          <input
+            type="checkbox"
+            name="${seg.inputName}"
+            value="1"
+            class="segment-input"
+            ${enabled ? "checked" : ""}
+          />
+          <div class="segment-content">
+            <div class="segment-header">
+              <div class="segment-title-wrap">
+                <span class="segment-badge">
+                  <span class="segment-dot"></span>
+                  <span class="segment-status-text">${statusText}</span>
+                </span>
+                <span class="segment-title">
+                  <code>${seg.key}</code> · ${seg.label}
+                </span>
+              </div>
+              <span class="segment-status-detail">${statusDetail}</span>
+            </div>
+            <p class="segment-desc">
+              ${seg.description}
+            </p>
+            <div class="segment-metrics">
+              <div class="metric">
+                <span class="metric-label">Visitas</span>
+                <span class="metric-value">${metrics.visits}</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Elegibles</span>
+                <span class="metric-value">${metrics.eligible}</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Con anuncio</span>
+                <span class="metric-value">${metrics.rendered}</span>
+              </div>
+            </div>
+          </div>
+        </label>
+      `;
     })
     .join("");
+
+  const killStatusText = globalEnabled ? "Anuncios ACTIVADOS" : "Anuncios DETENIDOS";
+  const killSubtitle = globalEnabled
+    ? "Los segmentos activos pueden recibir bloques de AdSense."
+    : "No se inyectarán bloques de AdSense hasta reactivar este switch.";
 
   const html = `<!doctype html>
 <html lang="es">
@@ -78,415 +147,639 @@ export default defineEventHandler(async (event) => {
   <style>
     :root {
       color-scheme: light dark;
-      --bg: #0f172a;
-      --bg-alt: #111827;
-      --card-bg: #020617;
-      --border: #1f2937;
+      --bg: #020617;
+      --bg-elevated: #020617;
+      --bg-soft: #0b1120;
+      --border-subtle: rgba(148, 163, 184, 0.25);
+      --border-strong: rgba(148, 163, 184, 0.5);
       --accent: #22c55e;
-      --accent-soft: rgba(34,197,94,0.15);
-      --text: #f9fafb;
-      --muted: #9ca3af;
+      --accent-soft: rgba(34, 197, 94, 0.18);
+      --accent-strong: #16a34a;
       --danger: #ef4444;
+      --danger-soft: rgba(248, 113, 113, 0.16);
+      --text: #e5e7eb;
+      --text-soft: #9ca3af;
+      --text-subtle: #6b7280;
+      --surface-radius: 0.75rem;
+      --shadow-soft: 0 0.5rem 1.75rem rgba(15, 23, 42, 0.8);
     }
-    * { box-sizing: border-box; }
+
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       margin: 0;
       padding: 1.5rem;
-      background: radial-gradient(circle at top, #1d2939 0, #020617 40%);
+      background: radial-gradient(circle at top, #1f2937 0, #020617 50%);
       color: var(--text);
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    .page {
-      max-width: 64rem;
-      margin: 0 auto;
-    }
-    h1, h2, h3, h4 {
-      margin: 0 0 0.75rem 0;
-      line-height: 1.1;
-    }
-    p {
-      margin: 0 0 0.75rem 0;
+      font-size: 1rem;
       line-height: 1.5;
     }
-    .card {
-      background: radial-gradient(circle at top left, var(--bg-alt) 0, var(--card-bg) 60%);
-      border-radius: 0.75rem;
-      border: 1px solid var(--border);
-      padding: 1.25rem 1.5rem;
-      margin-bottom: 1.25rem;
-    }
-    .card-header {
+
+    .page {
+      max-width: 70rem;
+      margin: 0 auto;
       display: flex;
       flex-direction: column;
-      gap: 0.25rem;
-      margin-bottom: 0.75rem;
+      gap: 1.25rem;
     }
+
+    .page-header {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding: 1.25rem 1.5rem;
+      border-radius: var(--surface-radius);
+      border: 0.0625rem solid var(--border-subtle);
+      background: radial-gradient(circle at top left, #111827 0, #020617 60%);
+      box-shadow: var(--shadow-soft);
+    }
+
+    .page-header-top {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
     .badge {
       display: inline-flex;
       align-items: center;
       gap: 0.5rem;
       padding: 0.25rem 0.75rem;
-      border-radius: 9999px;
+      border-radius: 999rem;
       font-size: 0.75rem;
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      background: rgba(15,23,42,0.8);
-      border: 1px solid var(--border);
-      color: var(--muted);
+      background: rgba(15, 23, 42, 0.9);
+      border: 0.0625rem solid var(--border-subtle);
+      color: var(--text-soft);
     }
+
     .badge-dot {
       width: 0.5rem;
       height: 0.5rem;
-      border-radius: 9999px;
+      border-radius: 999rem;
       background: var(--accent);
     }
-    .badge-danger .badge-dot {
-      background: var(--danger);
+
+    h1 {
+      margin: 0;
+      font-size: 1.6rem;
+      letter-spacing: -0.03em;
     }
-    .badge-danger {
-      border-color: rgba(239,68,68,0.35);
-      background: rgba(127,29,29,0.6);
-      color: #fecaca;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      gap: 1rem;
-    }
-    @media (min-width: 48rem) {
-      .grid-2 {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-      .grid-3 {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-      }
-    }
-    .stat {
+
+    .page-header-meta {
       display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-top: 0.25rem;
     }
-    .stat-label {
-      font-size: 0.9rem;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
+
+    .meta-item {
+      font-size: 0.8rem;
+      color: var(--text-subtle);
     }
-    .stat-value {
-      font-size: 1.5rem;
-      font-weight: 600;
-    }
-    .table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.9rem;
-    }
-    .table th,
-    .table td {
-      padding: 0.5rem 0.25rem;
-      border-bottom: 1px solid var(--border);
-      text-align: left;
-      white-space: nowrap;
-    }
-    .table th {
+
+    .meta-label {
       font-weight: 500;
-      color: var(--muted);
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      font-size: 0.8rem;
+      letter-spacing: 0.09em;
+      margin-right: 0.35rem;
+      color: var(--text-soft);
     }
-    .table tr:last-child td {
-      border-bottom: none;
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.8em;
+      padding: 0.08rem 0.3rem;
+      border-radius: 0.4rem;
+      background: rgba(15, 23, 42, 0.8);
+      border: 0.0625rem solid rgba(148, 163, 184, 0.35);
+      color: #cbd5f5;
     }
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0.2rem 0.75rem;
-      border-radius: 9999px;
-      font-size: 0.8rem;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-    .pill-on {
-      background: var(--accent-soft);
-      color: #bbf7d0;
-    }
-    .pill-off {
-      background: rgba(15,23,42,0.9);
-      color: var(--muted);
-    }
-    form {
+
+    .section {
+      padding: 1.25rem 1.5rem;
+      border-radius: var(--surface-radius);
+      border: 0.0625rem solid var(--border-subtle);
+      background: var(--bg-soft);
+      box-shadow: var(--shadow-soft);
       display: flex;
       flex-direction: column;
       gap: 1rem;
     }
-    .form-row {
+
+    .section-header {
       display: flex;
       flex-direction: column;
       gap: 0.35rem;
     }
-    @media (min-width: 40rem) {
-      .form-row-inline {
-        flex-direction: row;
-        align-items: center;
-        gap: 1rem;
-      }
+
+    .section-title {
+      margin: 0;
+      font-size: 1.1rem;
+      letter-spacing: -0.02em;
     }
-    label {
-      font-size: 0.9rem;
-      color: var(--muted);
+
+    .section-subtitle {
+      margin: 0;
+      font-size: 0.85rem;
+      color: var(--text-subtle);
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }
+
+    .stat-card {
+      border-radius: 0.75rem;
+      border: 0.0625rem solid var(--border-subtle);
+      background: radial-gradient(circle at top left, rgba(15, 23, 42, 0.95) 0, #020617 70%);
+      padding: 0.75rem 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    .stat-label {
+      font-size: 0.8rem;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+    }
+
+    .stat-value {
+      font-size: 1.2rem;
+      font-weight: 600;
+    }
+
+    .stat-note {
+      font-size: 0.8rem;
+      color: var(--text-subtle);
+    }
+
+    .kill-container {
+      border-radius: 1rem;
+      padding: 1.1rem 1.2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.9rem;
+      border: 0.0625rem solid var(--border-strong);
+      background: radial-gradient(circle at top, rgba(34, 197, 94, 0.18) 0, rgba(15, 23, 42, 0.9) 55%);
+    }
+
+    .kill-container.kill-off {
+      background: radial-gradient(circle at top, rgba(239, 68, 68, 0.16) 0, rgba(15, 23, 42, 0.9) 55%);
+    }
+
+    .kill-inner {
+      display: flex;
+      flex-direction: column;
+      gap: 0.9rem;
+      align-items: flex-start;
+      cursor: pointer;
+    }
+
+    .kill-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      width: 100%;
+    }
+
+    .kill-text {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    .kill-title {
+      font-size: 1.2rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .kill-container.kill-on .kill-title {
+      color: #bbf7d0;
+    }
+
+    .kill-container.kill-off .kill-title {
+      color: #fecaca;
+    }
+
+    .kill-subtitle {
+      font-size: 0.85rem;
+      color: var(--text-soft);
+    }
+
+    .kill-toggle-wrap {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      width: 100%;
+    }
+
+    .kill-label {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--text-soft);
+    }
+
+    .kill-toggle {
       display: inline-flex;
       align-items: center;
-      gap: 0.5rem;
+      justify-content: flex-end;
     }
-    input[type="checkbox"] {
-      width: 1rem;
-      height: 1rem;
+
+    .kill-input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .kill-track {
+      width: 4.5rem;
+      height: 2.2rem;
+      border-radius: 999rem;
+      background: rgba(15, 23, 42, 0.9);
+      border: 0.09375rem solid rgba(148, 163, 184, 0.75);
+      display: flex;
+      align-items: center;
+      padding: 0 0.25rem;
+      box-shadow: inset 0 0.15rem 0.4rem rgba(0, 0, 0, 0.6);
+      transition: background-color 0.2s ease, border-color 0.2s ease;
+      position: relative;
+    }
+
+    .kill-thumb {
+      width: 1.7rem;
+      height: 1.7rem;
+      border-radius: 999rem;
+      background: #f9fafb;
+      box-shadow: 0 0.25rem 0.6rem rgba(15, 23, 42, 0.8);
+      transform: translateX(0);
+      transition: transform 0.2s ease, background-color 0.2s ease;
+    }
+
+    .kill-container.kill-on .kill-track {
+      background: var(--accent);
+      border-color: var(--accent-strong);
+    }
+
+    .kill-container.kill-on .kill-thumb {
+      transform: translateX(2.1rem);
+      background: #ecfdf3;
+    }
+
+    .kill-container.kill-off .kill-track {
+      background: rgba(31, 41, 55, 0.9);
+      border-color: rgba(148, 163, 184, 0.8);
+    }
+
+    .section-body {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .segment-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.75rem;
+    }
+
+    .segment-card {
+      border-radius: 0.85rem;
+      border: 0.0625rem solid var(--border-subtle);
+      background: rgba(15, 23, 42, 0.9);
+      padding: 0.9rem 1rem;
+      display: flex;
+      flex-direction: row;
+      gap: 0.75rem;
+      cursor: pointer;
+    }
+
+    .segment-card.segment-on {
+      background: radial-gradient(circle at top left, var(--accent-soft) 0, rgba(15, 23, 42, 0.98) 55%);
+      border-color: rgba(34, 197, 94, 0.6);
+    }
+
+    .segment-card.segment-off {
+      background: radial-gradient(circle at top left, rgba(15, 23, 42, 0.98) 0, #020617 60%);
+      border-color: rgba(148, 163, 184, 0.45);
+    }
+
+    .segment-input {
+      margin: 0;
+      margin-top: 0.2rem;
+      flex-shrink: 0;
+      width: 1.15rem;
+      height: 1.15rem;
       accent-color: var(--accent);
     }
-    input[type="number"] {
-      background: rgba(15,23,42,0.9);
-      border-radius: 0.5rem;
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 0.35rem 0.6rem;
+
+    .segment-content {
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      width: 100%;
+    }
+
+    .segment-header {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .segment-title-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    @media (min-width: 40rem) {
+      .segment-title-wrap {
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+      }
+    }
+
+    .segment-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.15rem 0.6rem;
+      border-radius: 999rem;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border: 0.0625rem solid rgba(148, 163, 184, 0.6);
+      background: rgba(15, 23, 42, 0.9);
+      color: var(--text-soft);
+    }
+
+    .segment-card.segment-on .segment-badge {
+      border-color: rgba(34, 197, 94, 0.9);
+      background: rgba(22, 163, 74, 0.2);
+      color: #bbf7d0;
+    }
+
+    .segment-dot {
+      width: 0.4rem;
+      height: 0.4rem;
+      border-radius: 999rem;
+      background: rgba(148, 163, 184, 0.9);
+    }
+
+    .segment-card.segment-on .segment-dot {
+      background: var(--accent);
+    }
+
+    .segment-status-text {
+      font-weight: 600;
+    }
+
+    .segment-title {
       font-size: 0.9rem;
-      max-width: 6rem;
+      font-weight: 500;
     }
-    input[type="number"]:focus {
-      outline: 2px solid var(--accent);
-      outline-offset: 1px;
-      border-color: transparent;
+
+    .segment-status-detail {
+      font-size: 0.8rem;
+      color: var(--text-subtle);
     }
+
+    .segment-desc {
+      margin: 0;
+      font-size: 0.8rem;
+      color: var(--text-soft);
+    }
+
+    .segment-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.5rem;
+      margin-top: 0.15rem;
+    }
+
+    .metric {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+
+    .metric-label {
+      font-size: 0.75rem;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .metric-value {
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    .hint {
+      font-size: 0.8rem;
+      color: var(--text-subtle);
+    }
+
     .btn-row {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.75rem;
+      gap: 0.7rem;
       align-items: center;
-      justify-content: flex-start;
     }
+
     button[type="submit"] {
-      border-radius: 9999px;
+      border-radius: 999rem;
       border: none;
-      padding: 0.5rem 1.5rem;
-      font-size: 0.9rem;
+      padding: 0.55rem 1.6rem;
+      font-size: 0.85rem;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.08em;
       cursor: pointer;
       background: var(--accent);
       color: #052e16;
-      box-shadow: 0 0.25rem 1rem rgba(22,163,74,0.4);
+      box-shadow: 0 0.35rem 1.4rem rgba(22, 163, 74, 0.55);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
     }
+
     button[type="submit"]:hover {
       filter: brightness(1.06);
     }
+
     .btn-secondary {
       background: transparent;
       color: #bbf7d0;
-      border: 1px solid rgba(34,197,94,0.6);
+      border: 0.0625rem solid rgba(34, 197, 94, 0.8);
       box-shadow: none;
     }
-    .hint {
-      font-size: 0.8rem;
-      color: var(--muted);
+
+    .btn-secondary:hover {
+      background: rgba(22, 163, 74, 0.18);
     }
-    a {
-      color: var(--accent);
-      text-decoration: none;
-    }
-    a:hover {
-      text-decoration: underline;
-    }
-    .segment-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 0.75rem;
-    }
-    .segment-cell {
-      border-radius: 0.75rem;
-      border: 1px solid var(--border);
-      padding: 0.75rem 0.85rem;
-      background: rgba(15,23,42,0.9);
+
+    .preset-row {
       display: flex;
       flex-direction: column;
-      gap: 0.35rem;
-      cursor: pointer;
+      gap: 0.75rem;
     }
-    .segment-title {
-      font-size: 0.85rem;
-      font-weight: 500;
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
+
+    @media (min-width: 48rem) {
+      .stats-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .segment-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .kill-inner {
+        flex-direction: column;
+      }
     }
-    .segment-desc {
-      font-size: 0.8rem;
-      color: var(--muted);
+
+    @media (min-width: 60rem) {
+      .segment-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
     }
   </style>
 </head>
 <body>
   <div class="page">
-    <div class="card">
-      <div class="card-header">
+    <header class="page-header">
+      <div class="page-header-top">
         <div class="badge">
           <span class="badge-dot"></span>
-          <span>/ads · Control de anuncios</span>
+          <span>/ads · Panel de control de anuncios</span>
         </div>
-        <h1>Ads Control Dashboard</h1>
+        <h1>Control en tiempo real de anuncios</h1>
         <p class="hint">
-          Esta herramienta es <strong>solo para uso interno</strong>. No compartas esta URL.
-          Todas las decisiones de anuncios pasan por esta configuración.
-        </p>
-        <p class="hint">
-          Host actual: <code>${url.hostname}</code>
+          Ajusta el kill switch global, la matriz de segmentos y los presets de forma segura.
+          No hay lógica oculta en el cliente: todo pasa por este panel del servidor.
         </p>
       </div>
-      <div class="grid grid-3">
-        <div class="stat">
-          <span class="stat-label">Visitas totales</span>
-          <span class="stat-value">${stats.totalVisits}</span>
+      <div class="page-header-meta">
+        <div class="meta-item">
+          <span class="meta-label">Host</span>
+          <code>${url.hostname}</code>
         </div>
-        <div class="stat">
-          <span class="stat-label">Elegibles (post-segmentación)</span>
-          <span class="stat-value">${stats.totalEligible}</span>
+        <div class="meta-item">
+          <span class="meta-label">Total visitas</span>
+          <span>${stats.totalVisits}</span>
         </div>
-        <div class="stat">
-          <span class="stat-label">Anuncios renderizados</span>
-          <span class="stat-value">${stats.totalRendered}</span>
+        <div class="meta-item">
+          <span class="meta-label">Elegibles</span>
+          <span>${stats.totalEligible}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Con anuncio</span>
+          <span>${stats.totalRendered}</span>
         </div>
       </div>
-    </div>
+    </header>
 
-    <div class="card">
-      <div class="card-header">
-        <h2>Matriz de control por segmento</h2>
-        <p class="hint">
-          Esta tabla combina configuración y KPIs por segmento. Si un segmento está en <strong>OFF</strong>,
-          mientras permanezca desactivado no será elegible para anuncios (aunque se sigan registrando visitas).
-        </p>
-      </div>
-      <div>
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Segmento</th>
-              <th>Configuración</th>
-              <th>Visitas</th>
-              <th>Elegibles</th>
-              <th>Renderizados</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${segmentRowsHtml}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header">
-        <h2>Configuración global</h2>
-      </div>
-      <div class="grid grid-2">
-        <div class="stat">
-          <span class="stat-label">Kill switch global</span>
-          <span class="pill ${globalEnabled ? "pill-on" : "pill-off"}">
-            ${globalEnabled ? "ON · anuncios habilitados" : "OFF · anuncios detenidos para todos"}
-          </span>
+    <form method="post" action="/ads" class="page-form">
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">Kill switch global</h2>
+          <p class="section-subtitle">
+            Corte maestro inmediato de todos los anuncios. Este es el control de pánico:
+            si se apaga, ningún visitante recibirá bloques de AdSense.
+          </p>
         </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header">
-        <h2>Editar configuración manual</h2>
-        <p class="hint">
-          Los cambios se aplican de inmediato a todas las páginas que usan el motor
-          de decisión (actualmente, la página principal index.html). El kill switch global
-          apaga cualquier bloque AdSense de forma inmediata.
-        </p>
-      </div>
-      <form method="post" action="/ads">
-        <div class="grid">
-          <div class="form-row">
-            <label>
-              <input type="checkbox" name="global_ads_enabled" value="1" ${globalEnabled ? "checked" : ""} />
-              Activar anuncios globalmente (kill switch)
+        <div class="section-body">
+          <div class="kill-container ${globalEnabled ? "kill-on" : "kill-off"}">
+            <label class="kill-inner">
+              <div class="kill-row">
+                <div class="kill-text">
+                  <span class="kill-title">${killStatusText}</span>
+                  <span class="kill-subtitle">${killSubtitle}</span>
+                </div>
+                <div class="kill-toggle-wrap">
+                  <span class="kill-label">Interruptor maestro</span>
+                  <div class="kill-toggle">
+                    <input
+                      type="checkbox"
+                      name="global_ads_enabled"
+                      value="1"
+                      class="kill-input"
+                      ${globalEnabled ? "checked" : ""}
+                    />
+                    <div class="kill-track">
+                      <div class="kill-thumb"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </label>
-            <p class="hint">
-              Interruptor principal. En <strong>OFF</strong> no se inyecta ningún bloque AdSense,
-              aunque la matriz de segmentos permita elegibilidad.
-            </p>
           </div>
 
-          <div class="form-row">
-            <div class="segment-grid">
-              <label class="segment-cell">
-                <div class="segment-title">
-                  <input type="checkbox" name="ads_for_internal" value="1" ${internalEnabled ? "checked" : ""} />
-                  <span><code>internal</code> · staff</span>
-                </div>
-                <p class="segment-desc">
-                  Usuarios internos autenticados vía <code>/login</code> con Google OAuth.
-                </p>
-              </label>
-
-              <label class="segment-cell">
-                <div class="segment-title">
-                  <input type="checkbox" name="ads_for_premium" value="1" ${premiumEnabled ? "checked" : ""} />
-                  <span><code>premium</code> · familias particulares</span>
-                </div>
-                <p class="segment-desc">
-                  Padres que se autentican en <code>login.php</code> con usuario de 6 caracteres.
-                </p>
-              </label>
-
-              <label class="segment-cell">
-                <div class="segment-title">
-                  <input type="checkbox" name="ads_for_daycare" value="1" ${daycareEnabled ? "checked" : ""} />
-                  <span><code>daycare</code> · guardería</span>
-                </div>
-                <p class="segment-desc">
-                  Padres que se autentican en <code>login.php</code> con usuario de longitud distinta de 6.
-                </p>
-              </label>
-
-              <label class="segment-cell">
-                <div class="segment-title">
-                  <input type="checkbox" name="ads_for_organic" value="1" ${organicEnabled ? "checked" : ""} />
-                  <span><code>organic</code> · tráfico orgánico</span>
-                </div>
-                <p class="segment-desc">
-                  Visitantes sin login previo en este navegador (segmento orgánico).
-                </p>
-              </label>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <span class="stat-label">Visitas totales</span>
+              <span class="stat-value">${stats.totalVisits}</span>
+              <span class="stat-note">Cada request que pasa por el motor de decisión.</span>
             </div>
-            <p class="hint">
-              Usa esta matriz como control fino por segmento. Si un segmento está en <strong>OFF</strong>,
-              no será elegible para anuncios mientras permanezca desactivado.
-            </p>
+            <div class="stat-card">
+              <span class="stat-label">Elegibles (post-segmentación)</span>
+              <span class="stat-value">${stats.totalEligible}</span>
+              <span class="stat-note">Segmento activo + sin bloqueo individual.</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-label">Anuncios renderizados</span>
+              <span class="stat-value">${stats.totalRendered}</span>
+              <span class="stat-note">Solo cuando el kill switch global está en ON.</span>
+            </div>
           </div>
         </div>
+      </section>
 
-        <div class="btn-row">
-          <button type="submit" name="action" value="save">Guardar cambios</button>
-          <p class="hint">
-            Guarda la combinación exacta de kill switch + matriz de segmentos que configures arriba.
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">Matriz por segmento</h2>
+          <p class="section-subtitle">
+            Control granular por tipo de usuario. Todo lo que está en ON aquí es potencialmente
+            elegible para anuncios cuando el kill switch global está activo.
           </p>
         </div>
-
-        <div class="form-row">
-          <h3>Presets rápidos de segmentación</h3>
+        <div class="section-body">
+          <div class="segment-grid">
+            ${segmentCardsHtml}
+          </div>
           <p class="hint">
-            Estas plantillas ajustan de forma automática la matriz de segmentos y ponen el kill switch en ON:
-            <br />
-            · Solo <strong>daycare</strong><br />
-            · <strong>daycare + organic</strong><br />
-            · <strong>todos los segmentos</strong>
+            Los KPIs por tarjeta muestran cuántas visitas tuvo cada segmento, cuántas fueron
+            elegibles y cuántas recibieron realmente un bloque de AdSense.
           </p>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">Acciones rápidas (presets)</h2>
+          <p class="section-subtitle">
+            Plantillas que ajustan automáticamente la matriz de segmentos y ponen el kill switch global en ON.
+          </p>
+        </div>
+        <div class="section-body preset-row">
           <div class="btn-row">
             <button type="submit" name="preset" value="daycare-only" class="btn-secondary">
               Preset: solo daycare
@@ -498,25 +791,35 @@ export default defineEventHandler(async (event) => {
               Preset: todos los segmentos
             </button>
           </div>
+          <p class="hint">
+            Puedes usar estos presets para avanzar de forma controlada:
+            primero solo <code>daycare</code>, luego <code>daycare + organic</code> y,
+            cuando haya confianza, habilitar también <code>premium</code> e <code>internal</code>.
+          </p>
         </div>
-      </form>
-    </div>
+      </section>
 
-    <div class="card">
-      <div class="card-header">
-        <div class="badge badge-danger">
-          <span class="badge-dot"></span>
-          <span>Notas importantes</span>
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">Guardar configuración actual</h2>
+          <p class="section-subtitle">
+            Persiste exactamente el estado actual del kill switch global y de la matriz por segmento.
+          </p>
         </div>
-      </div>
-      <ul class="hint">
-        <li>Todos los segmentos (<code>internal</code>, <code>premium</code>, <code>daycare</code>, <code>organic</code>) pueden recibir anuncios si están habilitados en la matriz y el kill switch global está en ON.</li>
-        <li>Las cookies de segmentación se comparten en el dominio <code>.casitaiedis.edu.mx</code> y persisten tras logout.</li>
-        <li>No implementes ocultado de anuncios por CSS ni toggles en el cliente: todo debe pasar por este panel.</li>
-        <li>Para desactivar todo al instante, pon el kill switch global en OFF desde este dashboard.</li>
-        <li>El bloque inyectado en index.html es siempre un bloque real de AdSense, configurado vía variables de entorno (cliente y slot).</li>
-      </ul>
-    </div>
+        <div class="section-body">
+          <div class="btn-row">
+            <button type="submit" name="action" value="save">
+              Guardar cambios
+            </button>
+            <p class="hint">
+              Los cambios se aplican de inmediato en el servidor. La página principal
+              <code>index.html</code> inyectará bloques reales de AdSense solo cuando el motor
+              de decisión lo permita.
+            </p>
+          </div>
+        </div>
+      </section>
+    </form>
   </div>
 </body>
 </html>`;
