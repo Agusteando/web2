@@ -60,116 +60,15 @@ function renderPostCol(opts: {
 }
 
 /**
- * Read AdSense configuration for the home-page banner from environment.
- *
- * REQUIRED env vars (per environment):
- *   - ADSENSE_CLIENT_ID            (e.g. "ca-pub-1234567890123456")
- *       or NUXT_ADSENSE_CLIENT_ID
- *       or NUXT_PUBLIC_ADSENSE_CLIENT_ID
- *
- *   - ADSENSE_HOME_SLOT_ID         (e.g. "9876543210")
- *       or NUXT_ADSENSE_HOME_SLOT_ID
- *       or NUXT_PUBLIC_ADSENSE_HOME_SLOT_ID
- *
- * PRODUCTION CHECKLIST:
- *   1) En tu cuenta de AdSense, crea una unidad responsive para la home.
- *   2) Copia el valor "data-ad-client" en ADSENSE_CLIENT_ID (o equivalente NUXT_*).
- *   3) Copia el valor "data-ad-slot" en ADSENSE_HOME_SLOT_ID (o equivalente NUXT_*).
- *   4) Despliega con estas variables de entorno configuradas; no se deben hardcodear IDs en el código.
- */
-function getAdsenseConfigForHome(debug: boolean): { clientId: string; slotId: string } | null {
-  const envClient =
-    process.env.ADSENSE_CLIENT_ID ??
-    process.env.NUXT_ADSENSE_CLIENT_ID ??
-    process.env.NUXT_PUBLIC_ADSENSE_CLIENT_ID ??
-    "";
-  const envSlot =
-    process.env.ADSENSE_HOME_SLOT_ID ??
-    process.env.NUXT_ADSENSE_HOME_SLOT_ID ??
-    process.env.NUXT_PUBLIC_ADSENSE_HOME_SLOT_ID ??
-    "";
-
-  const clientId = envClient.trim();
-  const slotId = envSlot.trim();
-
-  if (!clientId || !slotId) {
-    if (debug) {
-      // eslint-disable-next-line no-console
-      console.warn("[ads] AdSense env vars missing, skipping home ad strip", {
-        ADSENSE_CLIENT_ID: !!process.env.ADSENSE_CLIENT_ID,
-        NUXT_ADSENSE_CLIENT_ID: !!process.env.NUXT_ADSENSE_CLIENT_ID,
-        NUXT_PUBLIC_ADSENSE_CLIENT_ID: !!process.env.NUXT_PUBLIC_ADSENSE_CLIENT_ID,
-        ADSENSE_HOME_SLOT_ID: !!process.env.ADSENSE_HOME_SLOT_ID,
-        NUXT_ADSENSE_HOME_SLOT_ID: !!process.env.NUXT_ADSENSE_HOME_SLOT_ID,
-        NUXT_PUBLIC_ADSENSE_HOME_SLOT_ID: !!process.env.NUXT_PUBLIC_ADSENSE_HOME_SLOT_ID,
-      });
-    }
-    return null;
-  }
-
-  return { clientId, slotId };
-}
-
-/**
- * Ensure the AdSense loader script is present in <head>:
- *
- *   <script async
- *           src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXX"
- *           crossorigin="anonymous"></script>
- *
- * Loader is only injected when:
- *   - the decision engine says adsRendered=true
- *   - valid env config exists (client + slot)
- */
-function ensureAdsenseLoader($: CheerioAPI, clientId: string, debug: boolean): void {
-  const head = $("head").first();
-  if (!head.length) {
-    if (debug) {
-      // eslint-disable-next-line no-console
-      console.warn("[ads] <head> not found; cannot inject AdSense loader");
-    }
-    return;
-  }
-
-  const existing = $(
-    'script[src*="pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"]'
-  ).first();
-
-  if (existing.length) {
-    if (debug) {
-      // eslint-disable-next-line no-console
-      console.log("[ads] AdSense loader already present in <head>");
-    }
-    return;
-  }
-
-  const safeClient = escapeHtml(clientId);
-  const src = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${safeClient}`;
-
-  head.append(
-    `
-    <script async src="${src}" crossorigin="anonymous"></script>
-  `
-  );
-
-  if (debug) {
-    // eslint-disable-next-line no-console
-    console.log("[ads] Injected AdSense loader into <head>");
-  }
-}
-
-/**
  * Render the horizontal AdSense banner strip that appears near the
- * top of the home page for eligible visitors.
+ * top of the home page for eligible visitors, using the exact ad unit
+ * snippet provided by AdSense.
  *
- * Este bloque es un bloque real de AdSense (no placeholder) y se
- * configura exclusivamente vía variables de entorno + matriz de
- * segmentos en /ads.
+ * This markup is only injected when the server-side decision engine
+ * returns adsRendered=true, so segmentation and kill switches still
+ * control when it appears.
  */
-function renderHomeAdsStrip(clientId: string, slotId: string): string {
-  const safeClient = escapeHtml(clientId);
-  const safeSlot = escapeHtml(slotId);
-
+function renderHomeAdsStrip(): string {
   return `
     <section class="tp-ad-strip-area pt-60 pb-60">
       <div class="container">
@@ -185,11 +84,14 @@ function renderHomeAdsStrip(clientId: string, slotId: string): string {
                 </h3>
               </div>
               <div class="tp-ad-strip-slot w-100 w-md-auto mt-3 mt-md-0">
-                <!-- Google AdSense: home horizontal responsive -->
+                <!-- Google AdSense official unit snippet for homepage -->
+                <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1644096973273978"
+                        crossorigin="anonymous"></script>
+                <!-- ad -->
                 <ins class="adsbygoogle"
                      style="display:block"
-                     data-ad-client="${safeClient}"
-                     data-ad-slot="${safeSlot}"
+                     data-ad-client="ca-pub-1644096973273978"
+                     data-ad-slot="5188349041"
                      data-ad-format="auto"
                      data-full-width-responsive="true"></ins>
                 <script>
@@ -215,15 +117,8 @@ function renderHomeAdsStrip(clientId: string, slotId: string): string {
  *   - After .tp-hero-area
  *   - At the top of <main>
  */
-function injectHomeAdsStrip(
-  $: CheerioAPI,
-  clientId: string,
-  slotId: string,
-  debug: boolean
-): void {
-  ensureAdsenseLoader($, clientId, debug);
-
-  const adHtml = renderHomeAdsStrip(clientId, slotId);
+function injectHomeAdsStrip($: CheerioAPI, debug: boolean): void {
+  const adHtml = renderHomeAdsStrip();
 
   const heroArea = $(".tp-hero-area").first();
   const counterArea = $(".tp-counter-area").first();
@@ -294,18 +189,12 @@ export default defineEventHandler(async (event) => {
   //
   //    - Solo se inyecta cuando el motor de decisión devuelve adsRendered=true
   //      (segmento habilitado en la matriz y kill switch global en ON).
-  //    - Además, deben existir las variables de entorno de AdSense (cliente y slot).
+  //    - Se usa exactamente el snippet oficial de AdSense proporcionado.
   //
-  //    No hay rollout por porcentaje: el alcance se controla únicamente con la
-  //    matriz de segmentos en /ads y el interruptor global.
+  //    No hay lógica en el cliente para decidir si mostrar o no:
+  //    toda la decisión se hace en el servidor antes de inyectar el bloque.
   if (decision.adsRendered) {
-    const adsenseCfg = getAdsenseConfigForHome(debug);
-    if (adsenseCfg) {
-      injectHomeAdsStrip($, adsenseCfg.clientId, adsenseCfg.slotId, debug);
-    } else if (debug) {
-      // eslint-disable-next-line no-console
-      console.log("[ads] Decision allowed ads but AdSense config is missing; no banner rendered");
-    }
+    injectHomeAdsStrip($, debug);
   } else if (debug) {
     // eslint-disable-next-line no-console
     console.log("[ads] Home ad strip not rendered for this visit (decision.adsRendered=false)");
