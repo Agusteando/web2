@@ -34,6 +34,10 @@ const AD_CONFIG_ID = 1;
  * Load the single control-plane row from ad_config.
  * Ensures the seed row exists (id=1) so the rest of the system
  * can safely assume it is present.
+ *
+ * Nota: el campo rollout_percentage existe en el esquema pero el motor
+ * actual no lo utiliza; toda la exposición se controla por matriz
+ * de segmentos + kill switch global.
  */
 export async function getAdConfig(): Promise<AdConfigRow> {
   const pool = getDbPool();
@@ -90,7 +94,7 @@ export async function getAdConfig(): Promise<AdConfigRow> {
 
 /**
  * Patch the ad_config control-plane row with the provided fields.
- * Values are normalized (booleans -> 0/1, rollout clamped to 0–100).
+ * Values are normalized (booleans -> 0/1).
  */
 export async function updateAdConfig(partial: {
   global_ads_enabled?: boolean;
@@ -98,7 +102,6 @@ export async function updateAdConfig(partial: {
   ads_for_premium?: boolean;
   ads_for_daycare?: boolean;
   ads_for_organic?: boolean;
-  rollout_percentage?: number;
 }): Promise<void> {
   const pool = getDbPool();
 
@@ -128,12 +131,6 @@ export async function updateAdConfig(partial: {
   if (typeof partial.ads_for_organic === "boolean") {
     sets.push("ads_for_organic = ?");
     values.push(partial.ads_for_organic ? 1 : 0);
-  }
-
-  if (typeof partial.rollout_percentage === "number" && Number.isFinite(partial.rollout_percentage)) {
-    const clamped = Math.max(0, Math.min(100, Math.floor(partial.rollout_percentage)));
-    sets.push("rollout_percentage = ?");
-    values.push(clamped);
   }
 
   if (!sets.length) {

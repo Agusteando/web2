@@ -72,10 +72,10 @@ function renderPostCol(opts: {
  *       or NUXT_PUBLIC_ADSENSE_HOME_SLOT_ID
  *
  * PRODUCTION CHECKLIST:
- *   1) In your AdSense account, create a responsive display unit for the home page.
- *   2) Copy the "data-ad-client" value into ADSENSE_CLIENT_ID.
- *   3) Copy the "data-ad-slot" value into ADSENSE_HOME_SLOT_ID.
- *   4) Deploy with these env vars set; do NOT hardcode IDs in source.
+ *   1) En tu cuenta de AdSense, crea una unidad responsive para la home.
+ *   2) Copia el valor "data-ad-client" en ADSENSE_CLIENT_ID (o equivalente NUXT_*).
+ *   3) Copia el valor "data-ad-slot" en ADSENSE_HOME_SLOT_ID (o equivalente NUXT_*).
+ *   4) Despliega con estas variables de entorno configuradas; no se deben hardcodear IDs en el código.
  */
 function getAdsenseConfigForHome(debug: boolean): { clientId: string; slotId: string } | null {
   const envClient =
@@ -162,9 +162,9 @@ function ensureAdsenseLoader($: CheerioAPI, clientId: string, debug: boolean): v
  * Render the horizontal AdSense banner strip that appears near the
  * top of the home page for eligible visitors.
  *
- * This block is fully production-ready: no placeholders, no TODOs.
- * It uses the standard responsive AdSense snippet and relies on the
- * decision engine + DB control plane for segmentation and rollout.
+ * Este bloque es un bloque real de AdSense (no placeholder) y se
+ * configura exclusivamente vía variables de entorno + matriz de
+ * segmentos en /ads.
  */
 function renderHomeAdsStrip(clientId: string, slotId: string): string {
   const safeClient = escapeHtml(clientId);
@@ -281,7 +281,7 @@ export default defineEventHandler(async (event) => {
 
   const html = await readFile(tplPath, "utf-8");
 
-  // 1) Run the centralized ads decision engine (segmentation, kill switches, rollout)
+  // 1) Run the centralized ads decision engine (segmentation, kill switches)
   //    and record an ad_visits row for this request.
   const { decision } = await evaluateAdsForEvent(event);
 
@@ -292,16 +292,12 @@ export default defineEventHandler(async (event) => {
 
   // 3) Home-page AdSense strip:
   //
-  //    - Only injected when the decision engine says adsRendered=true
-  //    - AND when the required AdSense env vars are present
+  //    - Solo se inyecta cuando el motor de decisión devuelve adsRendered=true
+  //      (segmento habilitado en la matriz y kill switch global en ON).
+  //    - Además, deben existir las variables de entorno de AdSense (cliente y slot).
   //
-  //    PHASE 0 (SOAK): keep ad_config.global_ads_enabled = 0
-  //      -> decision.adsRendered will be false, no script or ads injected.
-  //
-  //    PHASE 1 (SOFT LAUNCH): set global_ads_enabled=1, ads_for_daycare/organic as desired,
-  //      rollout_percentage=5–10, with real AdSense IDs configured in env.
-  //
-  //    PHASE 2 (SCALE): slowly increase rollout_percentage via /ads dashboard.
+  //    No hay rollout por porcentaje: el alcance se controla únicamente con la
+  //    matriz de segmentos en /ads y el interruptor global.
   if (decision.adsRendered) {
     const adsenseCfg = getAdsenseConfigForHome(debug);
     if (adsenseCfg) {

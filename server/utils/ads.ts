@@ -1,5 +1,5 @@
 
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { H3Event } from "h3";
 import { createError, getCookie, getRequestURL, readBody, setCookie, setHeader } from "h3";
 import type { NitroRuntimeConfig } from "nitropack";
@@ -26,7 +26,12 @@ function normalizeEnvBoolean(raw: string | undefined | null): "true" | "false" |
 }
 
 /**
- * Hard env-based kill switch for ALL ads, regardless of DB config.
+ * Hard env-based kill switch legacy helper.
+ *
+ * Actualmente NO se usa en el motor de decisión; el kill switch efectivo
+ * es exclusivamente el flag global_ads_enabled controlado desde /ads.
+ * Se mantiene como utilidad opcional por si en el futuro se requiere un
+ * override de emergencia a nivel infraestructura.
  */
 export function isEnvAdsHardDisabled(): boolean {
   const raw =
@@ -40,6 +45,7 @@ export function isEnvAdsHardDisabled(): boolean {
 
 /**
  * Legacy helper for ENABLE_INDEX_ADS / NUXT_ENABLE_INDEX_ADS.
+ * No se usa en el nuevo motor, se conserva para compatibilidad.
  */
 export function isIndexAdsEnabled(runtimeConfig?: NitroRuntimeConfig): boolean {
   // Prefer explicit runtime config if present.
@@ -245,21 +251,14 @@ export async function getOrCreateVisitorContext(event: H3Event): Promise<Visitor
 }
 
 /**
- * Deterministic hashing of visitor_id into a bucket 0–99.
- */
-export function hashVisitorToBucket(visitorId: string): number {
-  const hash = createHash("sha256").update(visitorId).digest();
-  const bucket = hash.readUInt32BE(0) % 100;
-  return bucket;
-}
-
-/**
  * Core ad decision engine.
  *
- * - Respeta un bloqueo duro por cookie ads_suppressed=true.
- * - Luego aplica la matriz de toggles por segmento definida en ad_config.
- * - Después aplica el gateo por rollout (hash(visitor_id) % 100).
- * - Finalmente aplica el kill switch global + env.
+ * - Respeta un bloqueo duro por cookie ads_suppressed=true (opt-out individual).
+ * - Después aplica la matriz de toggles por segmento definida en ad_config
+ *   (incluye internal y premium).
+ * - No hay rollout porcentual: si el segmento está habilitado, la visita es
+ *   elegible al 100%.
+ * - adsRendered aplica además únicamente el kill switch global (global_ads_enabled).
  */
 export function computeAdDecision(visitor: VisitorContext, config: AdConfigRow): AdDecisionResult {
   const segment: UserSegment = visitor.userSegment;
@@ -293,19 +292,11 @@ export function computeAdDecision(visitor: VisitorContext, config: AdConfigRow):
     return { adsEligible: false, adsRendered: false };
   }
 
-  // Gateo por rollout (0–100) sobre visitor_id.
-  const bucket = hashVisitorToBucket(visitor.visitorId);
-  const rolloutRaw = Number(config.rollout_percentage);
-  const rollout = Number.isFinite(rolloutRaw)
-    ? Math.max(0, Math.min(100, rolloutRaw))
-    : 0;
+  // Sin rollout porcentual: todo visitante del segmento habilitado es elegible.
+  const adsEligible = true;
 
-  const withinRollout = bucket < rollout;
-  const adsEligible = withinRollout;
-
-  // Kill switch global + env.
-  const envHardDisabled = isEnvAdsHardDisabled();
-  const globalEnabled = config.global_ads_enabled === 1 && !envHardDisabled;
+  // Kill switch global: controlado exclusivamente desde /ads (ad_config.global_ads_enabled).
+  const globalEnabled = config.global_ads_enabled === 1;
 
   const adsRendered = adsEligible && globalEnabled;
 
@@ -339,10 +330,8 @@ export async function evaluateAdsForEvent(event: H3Event): Promise<{
       ads_for_premium: config.ads_for_premium,
       ads_for_daycare: config.ads_for_daycare,
       ads_for_organic: config.ads_for_organic,
-      rollout_percentage: config.rollout_percentage,
       adsEligible: decision.adsEligible,
       adsRendered: decision.adsRendered,
-      envHardDisabled: isEnvAdsHardDisabled(),
     });
   }
 

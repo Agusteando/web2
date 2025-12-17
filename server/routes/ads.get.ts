@@ -49,7 +49,9 @@ export default defineEventHandler(async (event) => {
       const metrics = bySegmentIndex[key] || { visits: 0, eligible: 0, rendered: 0 };
       const enabled = segmentConfigEnabled[key];
       const pillClass = enabled ? "pill-on" : "pill-off";
-      const pillText = enabled ? "ON · puede ser elegible" : "OFF · nunca elegible";
+      const pillText = enabled
+        ? "ON · puede ser elegible"
+        : "OFF · sin elegibilidad mientras esté desactivado";
 
       return `
               <tr>
@@ -280,6 +282,12 @@ export default defineEventHandler(async (event) => {
     button[type="submit"]:hover {
       filter: brightness(1.06);
     }
+    .btn-secondary {
+      background: transparent;
+      color: #bbf7d0;
+      border: 1px solid rgba(34,197,94,0.6);
+      box-shadow: none;
+    }
     .hint {
       font-size: 0.8rem;
       color: var(--muted);
@@ -357,7 +365,7 @@ export default defineEventHandler(async (event) => {
         <h2>Matriz de control por segmento</h2>
         <p class="hint">
           Esta tabla combina configuración y KPIs por segmento. Si un segmento está en <strong>OFF</strong>,
-          nunca es elegible para anuncios (aunque se sigan registrando visitas).
+          mientras permanezca desactivado no será elegible para anuncios (aunque se sigan registrando visitas).
         </p>
       </div>
       <div>
@@ -384,24 +392,21 @@ export default defineEventHandler(async (event) => {
       </div>
       <div class="grid grid-2">
         <div class="stat">
-          <span class="stat-label">Switch global</span>
+          <span class="stat-label">Kill switch global</span>
           <span class="pill ${globalEnabled ? "pill-on" : "pill-off"}">
-            ${globalEnabled ? "ON · anuncios habilitados" : "OFF · anuncios detenidos"}
+            ${globalEnabled ? "ON · anuncios habilitados" : "OFF · anuncios detenidos para todos"}
           </span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Rollout porcentaje</span>
-          <span class="stat-value">${config.rollout_percentage}%</span>
         </div>
       </div>
     </div>
 
     <div class="card">
       <div class="card-header">
-        <h2>Editar configuración</h2>
+        <h2>Editar configuración manual</h2>
         <p class="hint">
-          Los cambios se aplican de inmediato a todas las páginas que usen el motor
-          de decisión (actualmente, la página principal index.html).
+          Los cambios se aplican de inmediato a todas las páginas que usan el motor
+          de decisión (actualmente, la página principal index.html). El kill switch global
+          apaga cualquier bloque AdSense de forma inmediata.
         </p>
       </div>
       <form method="post" action="/ads">
@@ -409,11 +414,11 @@ export default defineEventHandler(async (event) => {
           <div class="form-row">
             <label>
               <input type="checkbox" name="global_ads_enabled" value="1" ${globalEnabled ? "checked" : ""} />
-              Activar anuncios globalmente
+              Activar anuncios globalmente (kill switch)
             </label>
             <p class="hint">
-              Kill switch principal. En <strong>OFF</strong> no se inyecta ningún contenedor de anuncios,
-              aunque la segmentación y elegibilidad se sigan registrando para análisis.
+              Interruptor principal. En <strong>OFF</strong> no se inyecta ningún bloque AdSense,
+              aunque la matriz de segmentos permita elegibilidad.
             </p>
           </div>
 
@@ -461,41 +466,38 @@ export default defineEventHandler(async (event) => {
             </div>
             <p class="hint">
               Usa esta matriz como control fino por segmento. Si un segmento está en <strong>OFF</strong>,
-              nunca será elegible para anuncios, incluso si el rollout es alto.
+              no será elegible para anuncios mientras permanezca desactivado.
             </p>
-          </div>
-
-          <div class="form-row form-row-inline">
-            <div>
-              <label for="rollout_percentage">Rollout porcentaje</label>
-            </div>
-            <div>
-              <input
-                id="rollout_percentage"
-                name="rollout_percentage"
-                type="number"
-                min="0"
-                max="100"
-                value="${config.rollout_percentage}"
-              />
-              <p class="hint">
-                Gating por <code>visitor_id</code> usando hash % 100. Ejemplo: 5 = 5% de los visitantes elegibles.
-              </p>
-            </div>
           </div>
         </div>
 
         <div class="btn-row">
-          <button type="submit">Guardar cambios</button>
+          <button type="submit" name="action" value="save">Guardar cambios</button>
           <p class="hint">
-            Fases recomendadas:
-            <br />
-            · Fase 0 (SOAK): <strong>global OFF</strong>, ajusta rollout y segmentación para medir elegibilidad.
-            <br />
-            · Fase 1 (SOFT LAUNCH): <strong>global ON</strong>, rollout 5–10%, contenedor placeholder (sin AdSense).
-            <br />
-            · Fase 2 (SCALE): incrementa rollout gradualmente y reemplaza el placeholder por un bloque AdSense.
+            Guarda la combinación exacta de kill switch + matriz de segmentos que configures arriba.
           </p>
+        </div>
+
+        <div class="form-row">
+          <h3>Presets rápidos de segmentación</h3>
+          <p class="hint">
+            Estas plantillas ajustan de forma automática la matriz de segmentos y ponen el kill switch en ON:
+            <br />
+            · Solo <strong>daycare</strong><br />
+            · <strong>daycare + organic</strong><br />
+            · <strong>todos los segmentos</strong>
+          </p>
+          <div class="btn-row">
+            <button type="submit" name="preset" value="daycare-only" class="btn-secondary">
+              Preset: solo daycare
+            </button>
+            <button type="submit" name="preset" value="daycare-organic" class="btn-secondary">
+              Preset: daycare + orgánico
+            </button>
+            <button type="submit" name="preset" value="all-segments" class="btn-secondary">
+              Preset: todos los segmentos
+            </button>
+          </div>
         </div>
       </form>
     </div>
@@ -508,10 +510,11 @@ export default defineEventHandler(async (event) => {
         </div>
       </div>
       <ul class="hint">
-        <li>Los segmentos <code>internal</code> y <code>premium</code> solo recibirán anuncios si se habilitan explícitamente en la matriz y pasan el rollout.</li>
+        <li>Todos los segmentos (<code>internal</code>, <code>premium</code>, <code>daycare</code>, <code>organic</code>) pueden recibir anuncios si están habilitados en la matriz y el kill switch global está en ON.</li>
         <li>Las cookies de segmentación se comparten en el dominio <code>.casitaiedis.edu.mx</code> y persisten tras logout.</li>
         <li>No implementes ocultado de anuncios por CSS ni toggles en el cliente: todo debe pasar por este panel.</li>
-        <li>Para desactivar todo al instante, pon <code>global_ads_enabled = 0</code> o usa el env kill switch.</li>
+        <li>Para desactivar todo al instante, pon el kill switch global en OFF desde este dashboard.</li>
+        <li>El bloque inyectado en index.html es siempre un bloque real de AdSense, configurado vía variables de entorno (cliente y slot).</li>
       </ul>
     </div>
   </div>

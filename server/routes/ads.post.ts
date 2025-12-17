@@ -21,33 +21,74 @@ export default defineEventHandler(async (event) => {
     return v === "1" || v === "on" || v === "true";
   };
 
-  const globalAdsEnabled = normalizeCheckbox(body.global_ads_enabled);
-  const adsForInternal = normalizeCheckbox(body.ads_for_internal);
-  const adsForPremium = normalizeCheckbox(body.ads_for_premium);
-  const adsForDaycare = normalizeCheckbox(body.ads_for_daycare);
-  const adsForOrganic = normalizeCheckbox(body.ads_for_organic);
+  const presetRaw = Array.isArray(body.preset) ? body.preset[0] : body.preset;
+  let mode: "manual" | "preset" = "manual";
 
-  let rolloutPercentage: number | undefined;
-  const rolloutRaw = Array.isArray(body.rollout_percentage)
-    ? body.rollout_percentage[0]
-    : body.rollout_percentage;
+  let globalAdsEnabled: boolean;
+  let adsForInternal: boolean;
+  let adsForPremium: boolean;
+  let adsForDaycare: boolean;
+  let adsForOrganic: boolean;
 
-  if (rolloutRaw != null && rolloutRaw !== "") {
-    const parsed = Number(rolloutRaw);
-    if (Number.isFinite(parsed)) {
-      rolloutPercentage = parsed;
+  if (presetRaw && typeof presetRaw === "string" && presetRaw.trim().length > 0) {
+    mode = "preset";
+    const preset = presetRaw.trim();
+
+    // Presets de segmentación:
+    // - daycare-only: solo daycare
+    // - daycare-organic: daycare + organic
+    // - all-segments: todos los segmentos
+    switch (preset) {
+      case "daycare-only":
+        globalAdsEnabled = true;
+        adsForInternal = false;
+        adsForPremium = false;
+        adsForDaycare = true;
+        adsForOrganic = false;
+        break;
+      case "daycare-organic":
+        globalAdsEnabled = true;
+        adsForInternal = false;
+        adsForPremium = false;
+        adsForDaycare = true;
+        adsForOrganic = true;
+        break;
+      case "all-segments":
+        globalAdsEnabled = true;
+        adsForInternal = true;
+        adsForPremium = true;
+        adsForDaycare = true;
+        adsForOrganic = true;
+        break;
+      default:
+        // Si llega un preset desconocido, caemos a modo manual.
+        mode = "manual";
+        globalAdsEnabled = normalizeCheckbox(body.global_ads_enabled);
+        adsForInternal = normalizeCheckbox(body.ads_for_internal);
+        adsForPremium = normalizeCheckbox(body.ads_for_premium);
+        adsForDaycare = normalizeCheckbox(body.ads_for_daycare);
+        adsForOrganic = normalizeCheckbox(body.ads_for_organic);
+        break;
     }
+  } else {
+    // Modo manual: leemos los checkboxes tal cual.
+    globalAdsEnabled = normalizeCheckbox(body.global_ads_enabled);
+    adsForInternal = normalizeCheckbox(body.ads_for_internal);
+    adsForPremium = normalizeCheckbox(body.ads_for_premium);
+    adsForDaycare = normalizeCheckbox(body.ads_for_daycare);
+    adsForOrganic = normalizeCheckbox(body.ads_for_organic);
   }
 
   if (debug) {
     // eslint-disable-next-line no-console
     console.log("[ads] Dashboard update", {
+      mode,
+      preset: presetRaw ?? null,
       globalAdsEnabled,
       adsForInternal,
       adsForPremium,
       adsForDaycare,
       adsForOrganic,
-      rolloutPercentage,
     });
   }
 
@@ -57,7 +98,6 @@ export default defineEventHandler(async (event) => {
     ads_for_premium: adsForPremium,
     ads_for_daycare: adsForDaycare,
     ads_for_organic: adsForOrganic,
-    rollout_percentage: rolloutPercentage,
   });
 
   return sendRedirect(event, "/ads", 302);
