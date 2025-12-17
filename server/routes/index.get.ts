@@ -64,9 +64,8 @@ function renderPostCol(opts: {
  * top of the home page for eligible visitors, using the exact ad unit
  * snippet provided by AdSense.
  *
- * This markup is only injected when the server-side decision engine
- * returns adsRendered=true, so segmentation and kill switches still
- * control when it appears.
+ * No additional visible text or labels are rendered here: either the
+ * ad appears, or there is no visual trace at all.
  */
 function renderHomeAdsStrip(): string {
   return `
@@ -74,30 +73,20 @@ function renderHomeAdsStrip(): string {
       <div class="container">
         <div class="row justify-content-center">
           <div class="col-xl-10 col-lg-11 col-md-12">
-            <div class="tp-ad-strip tp-bg-common-white tp-round-24 d-flex flex-column flex-md-row align-items-center justify-content-between">
-              <div class="tp-ad-strip-text mb-3 mb-md-0 text-center text-md-start">
-                <span class="tp-ff-dm fw-600 fs-14 ls-m-2 tp-text-grey-7 text-uppercase d-inline-block mb-10">
-                  Publicidad
-                </span>
-                <h3 class="tp-ff-familjen fs-32 lh-130-per ls-m-3 tp-text-common-black-5 mb-0">
-                  Mensajes y anuncios relevantes para nuestra comunidad IECS–IEDIS.
-                </h3>
-              </div>
-              <div class="tp-ad-strip-slot w-100 w-md-auto mt-3 mt-md-0">
-                <!-- Google AdSense official unit snippet for homepage -->
-                <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1644096973273978"
-                        crossorigin="anonymous"></script>
-                <!-- ad -->
-                <ins class="adsbygoogle"
-                     style="display:block"
-                     data-ad-client="ca-pub-1644096973273978"
-                     data-ad-slot="5188349041"
-                     data-ad-format="auto"
-                     data-full-width-responsive="true"></ins>
-                <script>
-                  (adsbygoogle = window.adsbygoogle || []).push({});
-                </script>
-              </div>
+            <div class="tp-ad-strip-slot w-100">
+              <!-- Google AdSense official unit snippet for homepage -->
+              <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1644096973273978"
+                      crossorigin="anonymous"></script>
+              <!-- ad -->
+              <ins class="adsbygoogle"
+                   style="display:block"
+                   data-ad-client="ca-pub-1644096973273978"
+                   data-ad-slot="5188349041"
+                   data-ad-format="auto"
+                   data-full-width-responsive="true"></ins>
+              <script>
+                (adsbygoogle = window.adsbygoogle || []).push({});
+              </script>
             </div>
           </div>
         </div>
@@ -190,6 +179,7 @@ export default defineEventHandler(async (event) => {
   //    - Solo se inyecta cuando el motor de decisión devuelve adsRendered=true
   //      (segmento habilitado en la matriz y kill switch global en ON).
   //    - Se usa exactamente el snippet oficial de AdSense proporcionado.
+  //    - No se añade ningún texto visible ("Publicidad", etc.).
   //
   //    No hay lógica en el cliente para decidir si mostrar o no:
   //    toda la decisión se hace en el servidor antes de inyectar el bloque.
